@@ -33,7 +33,7 @@ from instance import instance  # noqa: E402
 CACHE = Path.home() / '.cache/genv'
 REVIEW_SCORE_DELTA = 5
 REVIEW_MODELS = 3
-LADDER_MAX_CHARS = 220
+LADDER_MAX_CHARS = 260
 EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
 ANTHROPIC = 'https://platform.claude.com/docs/en/'
 START_URLS = [

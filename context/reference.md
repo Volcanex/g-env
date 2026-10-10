@@ -39,7 +39,10 @@ owned files, done test. Give concurrent builders separate worktrees or disjoint 
 Sonnet on recon, research and a small fix (2026-10-05) at 30-60s against ~10s.
 The Sonnet agents (`sonnet-medium-explorer`, `sonnet-medium-researcher`, `sonnet-medium-worker`) are
 Sonnet medium: use them when the operator is waiting on the answer, when nuance decides
-quality (writing, synthesis, UI), or for MCP connectors. `opus-medium-suborchestrator`
+quality (writing, synthesis, UI), or for MCP connectors. `haiku-xhigh-worker` (Haiku 5.5
+xhigh, AA 41 at $.12, added 2026-10-10) is the cheap Claude tier for bounded explore, research and
+gather jobs that must stay on Claude; it is a direct worker, not a forwarder, and the
+value model ranks it wherever its score clears the role floor. `opus-medium-suborchestrator`
 (Opus medium) runs a swarm of Sol and Luna jobs for one objective and integrates
 their reports. Claude is the protected quota and Codex should run out each week (it resets
 Friday 22:50, Claude Sunday 02:00). `context/temperature.py` rates each quota as

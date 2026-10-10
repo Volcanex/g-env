@@ -61,6 +61,7 @@ class ValueTests(unittest.TestCase):
         points = {i['id']: i for i in value.points()}
         self.assertEqual(set(points), {'opus-low', 'opus-medium', 'opus-high', 'opus-xhigh', 'opus-max',
                                        'sonnet-low', 'sonnet-medium', 'sonnet-high',
+                                       'haiku-high', 'haiku-xhigh',
                                        'sol-low', 'sol-medium', 'sol-high', 'sol-xhigh',
                                        'luna-low', 'luna-medium', 'luna-high', 'luna-xhigh',
                                        'astra-low', 'astra-medium', 'astra-high', 'astra-xhigh'})
@@ -69,8 +70,8 @@ class ValueTests(unittest.TestCase):
         self.assertEqual(points['sonnet-high']['spec'], 'claude:sonnet')
         self.assertEqual(points['astra-high']['spec'], 'codex:gpt-6-astra')
         self.assertAlmostEqual(points['sol-high']['c'], 0.32 / 0.21)
-        self.assertAlmostEqual(points['sonnet-high']['c'], 1.12 / 1.34)
-        self.assertEqual(points['luna-medium']['ttft_s'], 5)
+        self.assertAlmostEqual(points['sonnet-high']['c'], 0.88 / 1.34)
+        self.assertEqual(points['luna-medium']['ttft_s'], 8)
 
     def test_models_path_controls_points_and_references(self):
         data = json.loads((REPO / 'context/models.json').read_text())
@@ -550,7 +551,11 @@ class PreviewTests(unittest.TestCase):
                     if flip['size'] == 2:
                         for dim in value.FLIP_DIMS:
                             levels = list(value.STAKES) if dim == 'stakes' else list(value.RATIOS) if 'temp' in dim else list(temperature.SPEEDS)
+                            provider, _, key = dim.partition(' ')
+                            here = base['stakes'] if dim == 'stakes' else base['prices'][provider][key]
                             for level in levels:
+                                if level == here:  # flips only search changes; re-pinning the live label is not one (pins ratio 1.0, drops live speed cost)
+                                    continue
                                 one = {'changes': [{'what': dim, 'to': level}]}
                                 s, p = self.apply(one, overrides)
                                 self.assertNotEqual(value.explain(role, s or stakes, overrides=p, **self.paths)['pick'], rival)

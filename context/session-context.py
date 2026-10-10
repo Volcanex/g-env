@@ -19,7 +19,7 @@ import urllib.request
 import time
 from zoneinfo import ZoneInfo
 
-TARGET_CHARS = 7000
+TARGET_CHARS = 7200
 MAX_SOURCE_CHARS = 100000
 MODELS_FILE = Path(__file__).resolve().parent / 'models.json'
 MODELS_STALE_DAYS = 45

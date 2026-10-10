@@ -11,7 +11,7 @@ BASE = {'claude': 9.0, 'codex': 3.3}
 RESERVE = {'claude': 15, 'codex': 0}
 RATIOS = {'BURN': 0.3, 'HOT': 0.5, 'WARM': 0.75, 'COOL': 1.0, 'COLD': 1.5, 'FREEZING': 2.5}
 STAKES = {'routine': 0.8, 'normal': 1.0, 'important': 1.4, 'critical': 2.0}
-FAMILIES = {'opus-5.5': 'opus', 'sonnet-5.5': 'sonnet', 'gpt-6.1-sol': 'sol',
+FAMILIES = {'opus-5.5': 'opus', 'sonnet-5.5': 'sonnet', 'haiku-5.5': 'haiku', 'fable-5.1': 'fable', 'gpt-6.1-sol': 'sol',
             'gpt-6-luna': 'luna', 'gpt-6-astra': 'astra'}
 
 

@@ -18,6 +18,10 @@ TODAY = dt.date(2026, 10, 11)
 SEED = json.loads((REPO / 'context/models.json').read_text())
 
 
+def cell(data, model, effort):
+    return next(c for c in data['effort_ladder'] if (c['model'], c['effort']) == (model, effort))
+
+
 def good():
     data = copy.deepcopy(SEED)
     data['as_of'] = TODAY.isoformat()
@@ -40,12 +44,12 @@ class SchemaTest(unittest.TestCase):
         data['effort_ladder'][0]['source'] = ''
         data['swe_bench_pro']['source'] = ''
         errors = ' | '.join(rm.validate(data, TODAY))
-        for needle in ('opus-5.5: score AA has no source URL', 'sonnet-5.5: cost', 'ladder sonnet-5.5-low: source URL', 'swe_bench_pro'):
+        for needle in ('opus-5.5: score AA has no source URL', 'sonnet-5.5: cost', 'ladder haiku-5.5-high: source URL', 'swe_bench_pro'):
             self.assertIn(needle, errors)
 
     def test_dominated_or_unordered_ladder_is_rejected(self):
         data = good()
-        data['effort_ladder'].append({**data['effort_ladder'][0], 'model': 'sonnet-5.5', 'effort': 'xhigh', 'score': 52, 'cost_usd': 2.75, 'ttft_s': 36})
+        data['effort_ladder'].append({**data['effort_ladder'][0], 'model': 'sonnet-5.5', 'effort': 'xhigh', 'score': 52, 'cost_usd': 2.75, 'ttft_s': 41})  # opus-5.5-high (54, 1.82, 40) beats it
         errors = ' | '.join(rm.validate(data, TODAY))
         self.assertIn('dominated', errors)
         self.assertIn('not ordered', errors)
@@ -62,10 +66,12 @@ class SchemaTest(unittest.TestCase):
 
     def test_normalise_rounds_source_jitter_away(self):
         data = good()
-        for c, (cost, ttft) in zip(data['effort_ladder'], ((0.4201, 1.17), (0.55, 4.5), (0.59, 1.08))):
-            c['cost_usd'], c['ttft_s'] = cost, ttft
+        first = data['effort_ladder'][:3]
+        want = [(c['cost_usd'], c['ttft_s']) for c in first]
+        for c, (cost, ttft), (dc, dt_) in zip(first, want, ((0.0001, 0.17), (0, -0.2), (-0.0004, 0.08))):
+            c['cost_usd'], c['ttft_s'] = round(cost + dc, 4), ttft + dt_
         rm.normalise(data)
-        self.assertEqual([(c['cost_usd'], c['ttft_s']) for c in data['effort_ladder'][:3]], [(0.42, 1), (0.55, 5), (0.59, 1)])
+        self.assertEqual([(c['cost_usd'], c['ttft_s']) for c in first], want)
         self.assertFalse(rm.diff(SEED, {**data, 'as_of': SEED['as_of']})['material'])
 
     def test_ladder_line_fits_and_roster_must_exist(self):
@@ -149,7 +155,7 @@ class GuardTest(unittest.TestCase):
 
     def test_small_ladder_change_commits_pushes_and_pages_one_line(self):
         new = good()
-        new['effort_ladder'][4]['score'] = 52
+        cell(new, 'opus-5.5', 'medium')['score'] = 52
         self.assertEqual(self.apply(new), 0)
         self.assertEqual(self.commits(), 2)
         self.assertEqual(len(self.pages), 1)
@@ -161,9 +167,9 @@ class GuardTest(unittest.TestCase):
 
     def test_model_removed_commits(self):
         new = good()
-        new['models'] = [m for m in new['models'] if m['id'] != 'haiku-4.5']
+        new['models'] = [m for m in new['models'] if m['id'] != 'fable-5.1']
         self.assertEqual(self.apply(new), 0)
-        self.assertIn('removed haiku-4.5', self.pages[0][1])
+        self.assertIn('removed fable-5.1', self.pages[0][1])
         self.assertEqual(self.commits(), 2)
 
     def test_score_jump_of_five_is_held_for_review(self):
@@ -187,7 +193,7 @@ class GuardTest(unittest.TestCase):
 
     def test_dry_run_writes_commits_and_pages_nothing(self):
         new = good()
-        new['effort_ladder'][4]['score'] = 52
+        cell(new, 'opus-5.5', 'medium')['score'] = 52
         new['models'][0]['scores']['AA'] = 70
         with patch('builtins.print') as shown:
             self.assertEqual(self.apply(new, '--dry-run'), 0)
@@ -197,7 +203,7 @@ class GuardTest(unittest.TestCase):
 
     def test_dry_run_prints_the_diff(self):
         new = good()
-        new['effort_ladder'][4]['score'] = 52
+        cell(new, 'opus-5.5', 'medium')['score'] = 52
         with patch('builtins.print') as shown:
             self.apply(new, '--dry-run')
         output = ' '.join(str(c) for c in shown.call_args_list)

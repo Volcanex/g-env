@@ -18,7 +18,7 @@ import temperature  # noqa: E402
 
 SPEEDS = ((5, 'F'), (30, 'M'), (120, 'S'))
 TASTE = ((1440, '∴'), (1340, ':'))
-FAMILIES = {'opus-5.5': 'opus', 'sonnet-5.5': 'sonnet', 'fable-5.1': 'fable', 'gpt-6.1-sol': 'sol',
+FAMILIES = {'opus-5.5': 'opus', 'sonnet-5.5': 'sonnet', 'haiku-5.5': 'haiku', 'fable-5.1': 'fable', 'gpt-6.1-sol': 'sol',
             'gpt-6-luna': 'luna', 'gpt-6-astra': 'astra'}
 
 

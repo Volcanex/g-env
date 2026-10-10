@@ -114,6 +114,7 @@
   "value": {
     "gather": {
       "families": [
+        "haiku",
         "luna",
         "sol",
         "sonnet"
@@ -123,6 +124,7 @@
     },
     "bulk": {
       "families": [
+        "haiku",
         "luna",
         "sol",
         "sonnet"
@@ -132,6 +134,7 @@
     },
     "explore": {
       "families": [
+        "haiku",
         "sol",
         "sonnet",
         "opus",
@@ -141,6 +144,7 @@
     },
     "research": {
       "families": [
+        "haiku",
         "sol",
         "sonnet",
         "opus",
@@ -150,6 +154,7 @@
     },
     "build": {
       "families": [
+        "haiku",
         "sol",
         "sonnet",
         "opus",
@@ -159,6 +164,7 @@
     },
     "design": {
       "families": [
+        "haiku",
         "sol",
         "sonnet",
         "opus",
@@ -170,6 +176,7 @@
     },
     "verify": {
       "families": [
+        "haiku",
         "sol",
         "sonnet",
         "opus",

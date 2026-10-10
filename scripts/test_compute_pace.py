@@ -30,6 +30,12 @@ def row(metric, used, resets, provider="claude", note=None):
             "fetched_at": NOW.isoformat(), "note": note}
 
 
+_rm_spec = importlib.util.spec_from_loader("refresh_models_budget", SourceFileLoader("refresh_models_budget", str(Path(__file__).resolve().parents[1] / "bin/refresh-models")))
+_rm = importlib.util.module_from_spec(_rm_spec)
+_rm_spec.loader.exec_module(_rm)
+LADDER_MAX_CHARS = _rm.LADDER_MAX_CHARS  # the product's own cap (260)
+
+
 class IntervalTests(unittest.TestCase):
     IDLE, TAIL = dt.timedelta(minutes=30), dt.timedelta(minutes=10)
 
@@ -295,15 +301,15 @@ class ModelsTests(unittest.TestCase):
         text = ctx.models_section(today=dt.date(2026, 10, 4))
         self.assertIn("luna", text)
         self.assertNotIn("jev", text)
-        self.assertLessEqual(len(text), 800)  # roster ~500 plus the ladder and SWE-bench lines
+        self.assertLessEqual(len(text), 1000)  # roster ~500 plus the ladder and SWE-bench lines
 
-    def test_shipped_ladder_is_one_line_within_220_chars_with_latency(self):
+    def test_shipped_ladder_is_one_line_within_260_chars_with_latency(self):
         text = ctx.models_section(today=dt.date(2026, 10, 4))
         ladder = [l for l in text.splitlines() if l.startswith("effort ladder")]
         self.assertEqual(len(ladder), 1)
-        self.assertLessEqual(len(ladder[0]), 220)
-        self.assertIn("sonnet-low .42/36/1s → opus-low .55/42/5s → sonnet-med .59/41/1s", ladder[0])
-        self.assertIn("opus-max 6/58/716s", ladder[0])
+        self.assertLessEqual(len(ladder[0]), LADDER_MAX_CHARS)
+        self.assertIn("sonnet-low .35/36/1s→sonnet-med .48/41/2s→opus-low .55/42/9s", ladder[0])
+        self.assertIn("opus-max 6/58/704s", ladder[0])
         self.assertIn("SWE-bench Pro opus $/solved: low .12 87.4%, medium .22 92.8%, high .29 95.3%", text)
 
     def test_long_ladder_drops_arrow_spaces_instead_of_truncating(self):
@@ -314,7 +320,7 @@ class ModelsTests(unittest.TestCase):
                                      for n in range(7)]
             path.write_text(json.dumps(data))
             line = [l for l in ctx.models_section(path, today=dt.date(2026, 10, 5)).splitlines() if l.startswith("effort ladder")][0]
-        self.assertLessEqual(len(line), 220)
+        self.assertLessEqual(len(line), LADDER_MAX_CHARS)
         self.assertIn("→", line)
         self.assertNotIn(" → ", line)
         self.assertEqual(line.count("sonnet-xhigh"), 7)
