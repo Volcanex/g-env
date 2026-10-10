@@ -34,7 +34,7 @@ context-heavy but quality-tolerant: Luna, run hard. Bounded exploring,
 research, building and verifying: Sol and Luna first, with web search: Claude is the protected quota and
 Codex should run out each week. Sonnet when the operator is waiting; UI work runs on Claude, never Sol (`g-pick --role build --domain ui` names the tier); Opus medium for visual fidelity or after a weaker agent fell short. Integrating, deciding and talking with the operator is context-light and
 quality-essential: Opus or better. Trade at most ~5% quality for savings; if a
-task needs all-Opus, use it. Repeated corrections or frustration mean the models
+task needs all-Opus, use it. When Claude is Hot or Burn, go wider (more parallel workers, best-of-two builds, separate verifiers), not only stronger. Repeated corrections or frustration mean the models
 are not smart enough: escalate. State the staffing plan before building.
 Routine edits need no team. Give workers owned files and an evidence contract;
 parents integrate. Mark stale quota data; API costs are not subscription usage.

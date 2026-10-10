@@ -74,8 +74,12 @@ Keep architecture, ambiguous tradeoffs, visual judgment, nuanced writing and fin
 code-quality decisions with the stronger model. It may implement directly when
 delegation would obscure the problem.
 
-Start independent work with one or two cheap workers; use more when scope warrants
-it. Give each a question, bounded inputs, read-only scope or exclusive files, a
+Width follows Claude's temperature. At Cool or colder, start independent work with
+one or two cheap workers; use more when scope warrants it. At Hot or Burn, spare
+quota goes wider before it goes stronger: up to 4 (Hot) or 6 (Burn) parallel workers,
+several explorers on different angles, two independent attempts at an important
+build (keep the better), and a separate verifier on every build. Wide Claude-only
+sweeps (private data, connectors) fan out across `haiku-xhigh-worker`. Give each a question, bounded inputs, read-only scope or exclusive files, a
 done condition and an evidence contract. Return conclusions, file:line or source
 links, relevant versions, verification and uncertainties, not raw logs. Send a
 concise brief rather than the full conversation where supported. Read critical
