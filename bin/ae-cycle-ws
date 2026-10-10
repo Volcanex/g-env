@@ -1,0 +1,34 @@
+#!/usr/bin/env zsh
+# Cycle to next/prev non-empty workspace.
+# Usage: ae-cycle-ws next|prev
+dir="${1:-next}"
+
+# These two lookups cost ~64ms together, in front of every swipe. Running them
+# concurrently was tried and reverted: it measured 58ms, a 6ms win, because
+# AeroSpace answers on a single socket and serializes the two requests whatever
+# we do. All concurrency buys is the overlap of one binary spawn. Not worth two
+# temp files. The swipe latency worth chasing is the cover, in ~/.ae-fade-timing.
+current=$("$HOME"/.local/bin/aerospace list-workspaces --focused 2>/dev/null)
+# N and Nx are one logical workspace across two screens, so fold the twins into
+# their number before doing anything: focus normally sits on the terminal (on
+# Nx), and a workspace holding only its terminal would otherwise read as empty
+# and get skipped entirely. Numeric only: ae-switch takes a number.
+current="${current%x}"
+workspaces=($("$HOME"/.local/bin/aerospace list-workspaces --monitor all --empty no 2>/dev/null | sed 's/x$//' | grep -E '^[0-9]+$' | sort -nu))
+
+count=${#workspaces[@]}
+[[ $count -eq 0 ]] && exit 0
+
+# Find 1-based index of current workspace
+idx=0
+for i in {1..$count}; do
+  [[ "${workspaces[$i]}" == "$current" ]] && idx=$i && break
+done
+
+if [[ "$dir" == "next" ]]; then
+  target_idx=$(( (idx % count) + 1 ))
+else
+  target_idx=$(( ((idx - 2 + count) % count) + 1 ))
+fi
+
+exec "$HOME/.local/bin/ae-switch" "${workspaces[$target_idx]}"

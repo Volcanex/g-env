@@ -1,0 +1,211 @@
+{
+  "_doc": "Job routing for bin/g-agent-run. The value key sets eligible model families and AA quality floors per role for context/value.py; it ranks points from models.json by stakes, quota price and speed. The runner tries the best point, then the best point of the other provider, up to three attempts, each with its own effort. Roles and effort remain the fallback when value is absent or raises. Claude is gated at COLD/FREEZING unless --allow-claude, critical stakes or --claude-only; quota-floor skips still apply. The tools key enables Bash per role (--tools forces it), web enables search, sandbox sets file access, timeout_s bounds each attempt, and connectors names allowed Claude MCP servers for --connectors jobs. Use --claude-only for MCP/private data work. Add a vendor with an adapter in g-agent-run and update this config.",
+  "roles": {
+    "gather": [
+      "codex:gpt-6-luna",
+      "claude:sonnet"
+    ],
+    "bulk": [
+      "codex:gpt-6-luna",
+      "claude:sonnet"
+    ],
+    "explore": [
+      "codex:gpt-6.1-sol",
+      "claude:sonnet"
+    ],
+    "research": [
+      "codex:gpt-6.1-sol",
+      "claude:sonnet"
+    ],
+    "build": [
+      "codex:gpt-6.1-sol",
+      "claude:sonnet"
+    ],
+    "design": [
+      "claude:opus",
+      "codex:gpt-6.1-sol"
+    ],
+    "verify": [
+      "codex:gpt-6.1-sol",
+      "claude:sonnet"
+    ],
+    "judge": [
+      "codex:gpt-6.1-sol",
+      "claude:sonnet"
+    ],
+    "review": [
+      "claude:opus",
+      "codex:gpt-6.1-sol"
+    ],
+    "boost": [
+      "codex:gpt-6-luna"
+    ]
+  },
+  "effort": {
+    "gather": "medium",
+    "bulk": "low",
+    "explore": "medium",
+    "research": "medium",
+    "build": "high",
+    "verify": "medium",
+    "judge": "high",
+    "review": "medium",
+    "boost": "medium",
+    "design": "high"
+  },
+  "sandbox": {
+    "gather": "workspace-write",
+    "bulk": "read-only",
+    "explore": "read-only",
+    "research": "read-only",
+    "build": "workspace-write",
+    "verify": "workspace-write",
+    "judge": "read-only",
+    "review": "read-only",
+    "boost": "read-only",
+    "design": "workspace-write"
+  },
+  "timeout_s": {
+    "gather": 900,
+    "bulk": 600,
+    "explore": 1800,
+    "research": 1800,
+    "build": 3600,
+    "verify": 900,
+    "judge": 600,
+    "review": 900,
+    "boost": 240,
+    "design": 3600
+  },
+  "tools": {
+    "review": true,
+    "explore": true,
+    "research": true,
+    "build": true,
+    "design": true
+  },
+  "connectors": [
+    "mcp__claude_ai_Era_Context",
+    "mcp__claude_ai_Brain"
+  ],
+  "quota_floor_pct": 3,
+  "quota_ids": {
+    "claude": [
+      "claude 5h",
+      "claude 7d"
+    ],
+    "codex": [
+      "codex 5h",
+      "codex 7d"
+    ]
+  },
+  "web": {
+    "gather": true,
+    "bulk": true,
+    "explore": true,
+    "research": true,
+    "build": true,
+    "verify": true,
+    "judge": true,
+    "review": true,
+    "boost": true,
+    "design": true
+  },
+  "value": {
+    "gather": {
+      "families": [
+        "luna",
+        "sol",
+        "sonnet"
+      ],
+      "floor": 0,
+      "weight": 0.15
+    },
+    "bulk": {
+      "families": [
+        "luna",
+        "sol",
+        "sonnet"
+      ],
+      "floor": 0,
+      "weight": 0.15
+    },
+    "explore": {
+      "families": [
+        "sol",
+        "sonnet",
+        "opus",
+        "astra"
+      ],
+      "floor": 40
+    },
+    "research": {
+      "families": [
+        "sol",
+        "sonnet",
+        "opus",
+        "astra"
+      ],
+      "floor": 40
+    },
+    "build": {
+      "families": [
+        "sol",
+        "sonnet",
+        "opus",
+        "astra"
+      ],
+      "floor": 46
+    },
+    "design": {
+      "families": [
+        "sol",
+        "sonnet",
+        "opus",
+        "astra"
+      ],
+      "floor": 40,
+      "taste": 2,
+      "why": "Loosely specified work judged by eye, wanted in one shot (UI layouts, spacing, design). Gabriel 2026-10-05: Claude gets the vibes. Taste (models.json taste_note) counts twice here: double what Design Arena says."
+    },
+    "verify": {
+      "families": [
+        "sol",
+        "sonnet",
+        "opus",
+        "astra"
+      ],
+      "floor": 46
+    },
+    "judge": {
+      "families": [
+        "sol",
+        "opus",
+        "astra"
+      ],
+      "floor": 48
+    },
+    "review": {
+      "families": [
+        "astra",
+        "opus",
+        "sol"
+      ],
+      "floor": 50
+    },
+    "boost": {
+      "families": [
+        "luna"
+      ],
+      "floor": 0,
+      "weight": 0.15,
+      "internal": true
+    }
+  },
+  "value_domains": {
+    "ui": {
+      "why": "UI work is design work: --domain ui ranks it as the design role.",
+      "as_role": "design"
+    }
+  }
+}

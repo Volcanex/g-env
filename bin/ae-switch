@@ -1,0 +1,544 @@
+#!/usr/bin/env bash
+# Switch AeroSpace workspace. One Ghostty window with native tabs, one tab per
+# workspace; each tab's (hidden) NSWindow lives permanently on its own
+# workspace, tiled in that workspace's layout. Switching = select tab N +
+# focus workspace N. Windows never travel, so tile positions are stable by
+# construction and no parking/floating of hidden siblings is needed.
+# ~/.ae-tab-<ws> holds "<ghostty-tab-id> <aerospace-window-id>"; if the saved
+# tab is gone (closed) a new one is created and re-recorded; stale AeroSpace
+# ids (after AeroSpace/Ghostty restarts) are re-resolved. Stray unclaimed
+# Ghostty windows get sent to workspace 1 (known-good home, see ae-startup).
+# Workspace 0 is freeform: no terminal tab, pure switch.
+# Assumes one real Ghostty window: Ghostty's AppleScript bridge goes stale with
+# multiple windows, so "window 1" is only trustworthy by construction.
+ws="$1"
+
+# AeroSpace's exec-and-forget runs with a minimal environment.
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
+
+# Talk to ae-fade. `hold` covers the screen with a still of what is on it and
+# keeps it there; `release` dissolves it. A dead or unpermitted daemon just
+# means a hard cut, never a hang.
+fade() {
+  [[ -S /tmp/ae-fade.sock ]] || return 0
+  printf '%s' "$1" | nc -U /tmp/ae-fade.sock >/dev/null 2>&1
+}
+
+# Tell ae-follow (the exec-on-workspace-change callback) that the workspace
+# changes it is about to see are ours. One switch moves the workspace several
+# times (raise the far half, focus the terminal, settle) and each fires that
+# callback, which would call us straight back. The lock holds our pid rather
+# than merely existing, so a switch that dies can't leave a file that silences
+# Dock-following for the rest of the session. ~/.ae-current is what the callback
+# compares against once the lock is gone, and it is written here at the START
+# rather than at the end so that every early exit below (workspace 0, a tab that
+# never appears) still counts as "this is where we were headed".
+echo $$ > /tmp/ae-switch.lock
+# The cover is held for as long as this script runs, so dropping it belongs with
+# the lock: every exit path, including being killed, has to put the screen
+# back. ae-fade caps a hold on its own side too, for the paths that never reach
+# a trap at all.
+trap 'rm -f /tmp/ae-switch.lock; fade release' EXIT
+printf '%s\n' "$ws" > "$HOME/.ae-current"
+
+# Start the crossfade snapshot NOW, in parallel with the lookups below. It has
+# to be on screen before anything visible changes, but nothing below is visible
+# until the tab select, so the wait costs nothing. (See the wait before it.)
+#
+# Held, not timed. A switch is not one length: the ordinary one is over in ~80ms
+# and a fixed hold covered it, but the first visit to a workspace has to create
+# a Ghostty tab and lands about 1.4s later. The fixed cover dissolved 180ms in,
+# onto the middle of that work, and the re-assert at the end then needed a cover
+# of its own, so a first visit read as flash, jump, flash. One held cover from
+# here to the EXIT trap means exactly one dissolve, whenever the switch is
+# genuinely finished.
+fade_pid=""
+if [[ -S /tmp/ae-fade.sock ]]; then
+  fade hold &
+  fade_pid=$!
+fi
+
+# workspace → host, from a cache keyed on manifest mtime. Starting a python
+# interpreter here cost 43ms of every single switch to read a file that changes
+# maybe monthly.
+ws_cache="$HOME/.cache/genv/ws-hosts"
+manifest="$HOME/Desktop/gcore/manifest.json"
+if [[ ! -s "$ws_cache" || "$manifest" -nt "$ws_cache" ]]; then
+  mkdir -p "${ws_cache%/*}"
+  python3 -c "
+import json
+try:
+  d=json.load(open('$manifest'))
+  for w in d['workspaces']:
+    print(w['number'], w.get('host') or '')
+except: pass
+" > "$ws_cache" 2>/dev/null
+fi
+target=$(awk -v w="$ws" '$1==w {print $2}' "$ws_cache" 2>/dev/null)
+
+if [[ -n "$target" ]]; then
+  echo "$target" > ~/.ae-workspace-"$ws"
+  touch ~/.ae-ws-primary-"$ws"
+fi
+
+# Every aerospace CLI call costs ~20ms (binary spawn + round-trip), and a switch
+# was making eight of them, and that WAS the switch latency. So fetch the window
+# table once and derive from it. WIN_MAP holds "<id> <workspace> <layout>" for
+# Ghostty windows; reload after anything that moves or creates windows.
+# win_map is the live query; WIN_MAP is a snapshot of it. Use the snapshot only
+# where nothing has moved windows since it was taken. The creation path below
+# changes them, so it re-queries and reloads.
+all_wins() {
+  aerospace list-windows --all --format '%{window-id} %{workspace} %{app-name} %{window-layout}' 2>/dev/null
+}
+win_map() { all_wins | awk '$3=="Ghostty" {print $1, $2, $4}'; }
+
+# The two reads below are independent, so run them concurrently rather than
+# paying 20ms twice. ALL_WINS also answers "is window X on workspace N?" later,
+# saving a third call.
+focus_tmp=$(mktemp)
+aerospace list-windows --focused --format '%{window-id} %{workspace}' >"$focus_tmp" 2>/dev/null &
+focus_q=$!
+ALL_WINS=$(all_wins)
+wait "$focus_q" 2>/dev/null
+WIN_MAP=$(awk '$3=="Ghostty" {print $1, $2, $4}' <<<"$ALL_WINS")
+
+# Join the crossfade started at the top. Everything above this line is
+# invisible bookkeeping, so it overlaps the snapshot for free; everything below
+# can change what's on screen, so the snapshot must be up first. Snapshotting
+# after a switch would capture the destination and dissolve to an identical
+# image. A dead or unpermitted ae-fade just means a hard cut, never a hang.
+# (Supersedes ae-veil, which hard-masked the cut in black rather than blending.)
+#
+# NOTE: ae-fade only holds Screen Recording as AeroSpace's child (see
+# bin/CLAUDE.md). Denied, it covers the screen with a windowless desktop frame,
+# so every switch flashes the wallpaper instead of blending it. `genv fade`
+# reports which of the two is happening.
+[[ -n "$fade_pid" ]] && wait "$fade_pid" 2>/dev/null
+
+# Remember which window was focused on the workspace we're leaving. One query,
+# not two: the focused window carries its own workspace.
+read -r old_focus old_ws < <(cat "$focus_tmp" 2>/dev/null; echo)
+rm -f "$focus_tmp"
+# N and Nx are two halves of one logical workspace, so focus memory is keyed on
+# the number alone. Otherwise leaving with the terminal focused would write
+# .ae-focus-Nx and leave .ae-focus-N holding a stale main-monitor window, which
+# on return steals focus off the terminal.
+old_ws="${old_ws%x}"
+if [[ -n "$old_ws" && "$old_ws" != "$ws" && -n "$old_focus" ]]; then
+  echo "$old_focus" > ~/.ae-focus-"$old_ws"
+fi
+
+# With a second monitor, flip the twin workspace (Nx, pinned to 'secondary')
+# first so both screens change together. No-op on one monitor.
+# Monitor count is cached: asking every switch cost 20ms to learn something that
+# changes only when a display is plugged in. Refreshed in the background at the
+# end of a switch, so docking self-heals after one switch rather than needing a
+# restart.
+mon_file="$HOME/.cache/genv/monitors"
+# Validate rather than just defaulting on a failed read: the refresh below
+# truncates this file before writing it, so a switch landing in that gap reads
+# it as empty and `(( > 1 ))` is a syntax error, not a false. Anything that
+# isn't a count means "assume one monitor".
+mon_count=$(cat "$mon_file" 2>/dev/null)
+[[ "$mon_count" =~ ^[0-9]+$ ]] || mon_count=1
+multi=0
+(( mon_count > 1 )) && multi=1
+flip_twin() {
+  (( multi )) && aerospace workspace "${ws}x" >/dev/null 2>&1
+}
+
+# Where this workspace's terminal tab lives. With a second monitor the default
+# is the twin Nx, i.e. the secondary screen: the terminal is usually the thing
+# you want on the iPad/big display, and homing it there means a new tab is born
+# there instead of on main and dragged over. `genv term main` overrides that for
+# the days you want the terminal on the laptop with the second screen for
+# everything else. Read from a file, not baked in, so a change costs nothing
+# more than the next cmd+N (no reload, no restart). Absent/garbage = secondary,
+# the long-standing behaviour. One monitor: unchanged, the terminal is on N.
+term_home=$(cat "$HOME/.genv-term-home" 2>/dev/null)
+term_ws="$ws"
+(( multi )) && [[ "$term_home" != "main" ]] && term_ws="${ws}x"
+
+# The half of the pair that a given window's focus does NOT land on. Focusing a
+# window is itself a workspace switch, so focusing the terminal raises whichever
+# screen it lives on and this raises the other one; with one monitor there's
+# nothing to raise separately. Takes the half being focused, so it follows
+# term_home rather than assuming the terminal is on the twin.
+other_half() { [[ "$1" == "$ws" ]] && echo "${ws}x" || echo "$ws"; }
+show_other() { (( multi )) && aerospace workspace "$(other_half "$1")" >/dev/null 2>&1; }
+
+# Raise the other half, then focus $2 last so the keyboard lands there. Used to
+# settle both screens at the end of a switch.
+#
+# Sent as one `aerospace eval` rather than two CLI calls. Each call is its own
+# binary spawn and round-trip, and between the two the window server has already
+# drawn the intermediate state, which is the visible flick between N and Nx on
+# a two-screen switch. Batched, AeroSpace performs the raise and the focus back
+# to back on its own side and only the result is drawn. Falls back to the pair
+# if eval fails, so an older aerospace binary still behaves.
+settle() {
+  (( multi )) || return 0
+  if [[ -n "$2" ]]; then
+    aerospace eval "workspace $(other_half "$1"); focus --window-id $2" >/dev/null 2>&1 && return 0
+  fi
+  show_other "$1"
+  [[ -n "$2" ]] && aerospace focus --window-id "$2" 2>/dev/null
+  return 0
+}
+
+# Workspace 0: freeform, no terminal tab.
+if [[ "$ws" == "0" ]]; then
+  flip_twin
+  aerospace workspace 0 >/dev/null 2>&1
+  # Only restore focus to a window still ON workspace 0. Focusing one that has
+  # since moved drags us to wherever it went. A stale id here (typically a
+  # Ghostty tab window, which ae-startup sweeps onto workspace 1) made cmd+0
+  # land on 0 and immediately bounce to 1. Same guard the main path uses below.
+  fs=$(cat ~/.ae-focus-0 2>/dev/null)
+  if [[ -n "$fs" ]] && awk -v f="$fs" '$1==f && ($2=="0" || $2=="0x") {ok=1} END{exit !ok}' <<<"$ALL_WINS"; then
+    aerospace focus --window-id "$fs" 2>/dev/null
+  else
+    rm -f ~/.ae-focus-0
+  fi
+  # Re-assert: the workspace/focus calls above can knock monitor 2 off the
+  # twin flip_twin just set. See the same fix further down for the numbered-
+  # workspace path.
+  flip_twin
+  exit 0
+fi
+
+tabfile="$HOME/.ae-tab-$ws"
+read -r saved_tab saved_win < <(cat "$tabfile" 2>/dev/null; echo)
+# Which Ghostty window hosts the workspace tabs. NOT named .ae-tab-*: that glob
+# is read elsewhere as "every workspace tabfile" and a group file inside it would
+# be parsed as a bogus workspace.
+groupfile="$HOME/.ae-ghostty-group"
+
+created=""
+# Fast path: AeroSpace still knows the saved window, so the tab is intact and
+# focusing that window is enough to select it (macOS selects a tab when its
+# window becomes key, verified). This skips a ~101ms AppleScript round-trip,
+# which was the single most expensive step in a switch. The focus itself
+# happens at the bottom, and MUST happen even when restoring focus elsewhere.
+if [[ -n "$saved_win" ]] && awk '{print $1}' <<<"$WIN_MAP" | grep -qx "$saved_win"; then
+  win_id="$saved_win"
+else
+  # Slow path: the id is unknown to AeroSpace: either the tab was closed, or
+  # ids were reassigned (AeroSpace/Ghostty restarted; hidden tab windows get
+  # re-detected with new ids when revealed). Only AppleScript can tell those
+  # apart, so pay for it here, where it's rare, instead of on every switch.
+  #
+  # Everything below addresses Ghostty by tab-group id, never by `window 1`.
+  # A second Ghostty window open by hand is normal (an editor, a stray shell,
+  # a Claude session), and `window 1` is then whichever window was most recently
+  # front, routinely NOT the group holding the workspace tabs. Tabs were being
+  # created in, and selected from, that stray window: the documented
+  # "assumes one real Ghostty window" caveat, hit in practice.
+  group=$(cat "$groupfile" 2>/dev/null)
+  # Asking Ghostty a question IS a launch. An Apple event addressed to an app
+  # that isn't running makes LaunchServices start it, hidden and windowless
+  # (`dontSwitch hide ... preferRunning`, LSLaunchedHidden=true in the log).
+  # The probe below then reads `count windows is 0` as "no Ghostty at all",
+  # and the creation path's `open -na` mints a SECOND instance beside the one
+  # we just conjured. That is the pair of windows every cold boot greeted us
+  # with, one second apart, one of them holding no tabs and no shells. Once
+  # two instances are registered under the same bundle id, every later
+  # `tell application "Ghostty"` is a coin flip. So: never probe an app that
+  # isn't there: absent is already the answer the probe would have returned.
+  if ! pgrep -x ghostty >/dev/null 2>&1; then
+    group=""
+  else
+  group=$(osascript - "$group" $(cat "$HOME"/.ae-tab-[0-9] 2>/dev/null | awk '{print $1}') <<'EOF' 2>/dev/null
+on run argv
+  set gid to item 1 of argv
+  tell application "Ghostty"
+    if (count windows) is 0 then return ""
+    if gid is not "" then
+      try
+        return id of (first window whose id is gid)
+      end try
+    end if
+    -- Recover the group from any tab we already track: the window holding a
+    -- recorded workspace tab IS the workspace group, whatever its id is now.
+    -- This is what re-anchors us after a Ghostty restart reassigns group ids.
+    if (count of argv) > 1 then
+      repeat with t in (items 2 thru -1 of argv)
+        repeat with w in windows
+          try
+            if (first tab of w whose id is (t as string)) is not missing value then return id of w
+          end try
+        end repeat
+      end repeat
+    end if
+    return ""
+  end tell
+end run
+EOF
+)
+  fi
+  if [[ -z "$group" ]]; then
+    # No usable group: either Ghostty isn't running, or every tab we tracked is
+    # gone and only strays remain. Both want a fresh window, not a tab grafted
+    # onto someone else's. Same signal the creation path already handles.
+    result="no-window"
+  else
+    echo "$group" > "$groupfile"
+    result=$(osascript - "$group" "$saved_tab" <<'EOF' 2>/dev/null
+on run argv
+  set gid to item 1 of argv
+  set savedId to item 2 of argv
+  tell application "Ghostty"
+    try
+      set w to first window whose id is gid
+    on error
+      return "no-window"
+    end try
+    try
+      select tab (first tab of w whose id is savedId)
+      return "selected"
+    on error
+      return "missing"
+    end try
+  end tell
+end run
+EOF
+)
+  fi
+fi
+
+if [[ -n "$win_id" ]]; then
+  : # fast path already resolved
+elif [[ "$result" == "selected" ]]; then
+  # Tab survived, id moved. Re-resolve: the revealed window is the Ghostty
+  # window no other tabfile claims.
+  sleep 0.4
+  claimed=$(cat "$HOME"/.ae-tab-* 2>/dev/null | awk '{print $2}')
+  win_id=""
+  for id in $(win_map | awk '{print $1}'); do
+    grep -qx "$id" <<<"$claimed" || { win_id="$id"; break; }
+  done
+  [[ -n "$win_id" ]] && echo "$saved_tab $win_id" > "$tabfile"
+else
+  created=1
+  # Creation path (first visit / closed tab / no Ghostty at all): switch first,
+  # then create, then diff window ids to learn the new tab's AeroSpace id.
+  # Switch to term_ws, not ws: a new window lands on the focused workspace, so
+  # this is what makes the tab appear on the secondary screen directly rather
+  # than being born on main and yanked across a frame later.
+  aerospace workspace "$term_ws" >/dev/null 2>&1
+  before=$(win_map | awk '{print $1}')
+  if [[ "$result" == "no-window" ]]; then
+    # `-n` forces a new instance whether or not one exists, so it turns every
+    # slow-path miss (stale group id, or every tracked tab closed) into a
+    # duplicate app. Ask for a new instance only when there is genuinely no
+    # Ghostty; otherwise reuse the running one and let it reopen a window.
+    # If reopening yields nothing (a running-but-windowless instance that
+    # refuses the reopen), the poll below falls through and we mint one
+    # properly, so neither branch can leave us with no terminal.
+    if pgrep -x ghostty >/dev/null 2>&1; then
+      open -a Ghostty
+    else
+      open -na Ghostty
+    fi
+    tab_id=""
+    retried=""
+    for i in {1..25}; do
+      sleep 0.2
+      # `window 1` is right here and only here: we just created the window, so
+      # it is the front one, and it becomes the group everything else addresses.
+      read -r group tab_id < <(osascript -e 'tell application "Ghostty"
+        if (count windows) is 0 then return ""
+        set w to window 1
+        return (id of w) & " " & (id of (first tab of w whose selected is true))
+      end tell' 2>/dev/null; echo)
+      [[ "$tab_id" == tab-* ]] && break
+      # Reuse didn't produce a window within ~1.6s: the instance is running but
+      # declined to reopen one. Fall back to a fresh instance rather than
+      # leaving the workspace with no terminal. A duplicate app is worth more
+      # than a dead workspace, and this is the only path that can still make one.
+      if (( i == 8 )) && [[ -z "$retried" ]]; then
+        retried=1
+        open -na Ghostty
+      fi
+    done
+    [[ -n "$group" ]] && echo "$group" > "$groupfile"
+  else
+    tab_id=$(osascript - "$group" <<'EOF' 2>/dev/null
+on run argv
+  tell application "Ghostty"
+    set w to first window whose id is (item 1 of argv)
+    return id of (new tab in w)
+  end tell
+end run
+EOF
+)
+  fi
+  [[ "$tab_id" == tab-* ]] || exit 0
+  win_id=""
+  for _ in {1..15}; do
+    sleep 0.2
+    win_id=$(comm -13 <(sort <<<"$before") <(win_map | awk '{print $1}' | sort) | head -1)
+    [[ -n "$win_id" ]] && break
+  done
+  [[ -n "$win_id" ]] && echo "$tab_id $win_id" > "$tabfile"
+
+  # Bubble the new tab (appended at the end, selected) left into workspace-number
+  # order, so the tab bar always reads ws1..ws9 left to right.
+  existing=$(osascript - "$group" <<'EOF' 2>/dev/null
+on run argv
+  tell application "Ghostty"
+    set w to first window whose id is (item 1 of argv)
+    return id of every tab of w
+  end tell
+end run
+EOF
+)
+  rank=1
+  for f in "$HOME"/.ae-tab-*; do
+    [[ -e "$f" ]] || continue
+    n="${f##*.ae-tab-}"
+    [[ "$n" =~ ^[0-9]+$ && "$n" != "$ws" ]] || continue
+    read -r tid _ < "$f"
+    [[ "$existing" == *"$tid"* ]] || continue
+    (( n < ws )) && rank=$((rank + 1))
+  done
+  total=$(awk -F', ' '{print NF}' <<< "$existing")
+  delta=$(( total - rank ))
+  (( delta > 0 )) && osascript - "$group" "$delta" <<'EOF' 2>/dev/null
+on run argv
+  tell application "Ghostty"
+    set w to first window whose id is (item 1 of argv)
+    perform action ("move_tab:-" & (item 2 of argv)) on focused terminal of (first tab of w whose selected is true)
+  end tell
+end run
+EOF
+fi
+
+# The slow paths above created or revealed windows, so the snapshot taken at the
+# top is stale. Re-take it before deciding what to move.
+[[ -n "$created" || "$result" == "selected" ]] && WIN_MAP=$(win_map)
+
+# Every tab-window belongs on its own workspace: put this one home if it
+# drifted, and send unclaimed strays to workspace 1.
+claimed_map=$(for f in "$HOME"/.ae-tab-*; do
+  [[ -e "$f" ]] || continue
+  echo "$(awk '{print $2}' "$f") ${f##*.ae-tab-}"
+done)
+while read -r id id_ws id_layout; do
+  home=$(awk -v w="$id" '$1==w {print $2}' <<<"$claimed_map")
+  if [[ "$id" == "$win_id" ]]; then
+    [[ "$id_ws" != "$term_ws" ]] && aerospace move-node-to-workspace --window-id "$id" "$term_ws" 2>/dev/null
+    # Only pay for this when it would actually change something. It ran on
+    # every switch to re-assert a property that's almost always already true.
+    [[ "$id_layout" == "floating" ]] && aerospace layout tiling --window-id "$id" 2>/dev/null
+  elif [[ -n "$home" ]]; then
+    # Same rule for every other tab, derived from this workspace's own answer so
+    # the two can't disagree: if the terminal is homed on the twin here, every
+    # tab is homed on its twin. This is also what re-homes them all after
+    # unplugging a monitor, or after `genv term main`: Nx collapses onto main
+    # (or is no longer wanted), and the next switch pulls each tab back to N.
+    [[ "$term_ws" != "$ws" ]] && home="${home}x"
+    [[ "$id_ws" != "$home" ]] && aerospace move-node-to-workspace --window-id "$id" "$home" 2>/dev/null
+  else
+    [[ "$id_ws" != "1" ]] && aerospace move-node-to-workspace --window-id "$id" 1 2>/dev/null
+  fi
+done <<<"$WIN_MAP"
+
+# The terminal sits at the right edge of a workspace it shares with other
+# windows, so it is always in the same place. Only on main: on the twin it is
+# alone. Under the held cover, so the shuffle is never seen; once it is already
+# rightmost this costs the one move that fails.
+if [[ -n "$win_id" && "$term_ws" == "$ws" ]]; then
+  for _ in 1 2 3 4 5 6; do
+    aerospace move --window-id "$win_id" --boundaries workspace --boundaries-action fail right >/dev/null 2>&1 || break
+  done
+fi
+
+# The one visible transition: raise the half the terminal is NOT on first, so
+# both screens land together. The terminal focus below raises the other half as
+# a side effect of focusing. Then restore the window that was focused when this
+# workspace was last left; fall back to the terminal.
+focus_saved=$(cat ~/.ae-focus-"$ws" 2>/dev/null)
+# Focus the tab window first, unconditionally: that's what selects this
+# workspace's Ghostty tab now that the AppleScript select is gone. Skipping it
+# when restoring focus to some other window would leave a different workspace's
+# tab on screen, and the terminal would look like it went missing.
+#
+# This also IS the workspace switch: focusing a window moves you to whatever
+# workspace it's on (the same behaviour that caused the old workspace-0 bounce),
+# so a separate `aerospace workspace` call is redundant. Keep the explicit
+# switch only for the case where we have no tab window to focus.
+if [[ -n "$win_id" ]]; then
+  # Raise the half the terminal is NOT on, then focus the terminal, as a single
+  # eval, so both screens land in one step. Run as two CLI calls they are two
+  # spawns with a drawn frame in between, and that frame is the flick between N
+  # and Nx you can see on every two-screen switch. Same reasoning as settle().
+  if (( multi )); then
+    aerospace eval "workspace $(other_half "$term_ws"); focus --window-id $win_id" >/dev/null 2>&1 \
+      || { show_other "$term_ws"; aerospace focus --window-id "$win_id" 2>/dev/null; }
+  else
+    aerospace focus --window-id "$win_id" 2>/dev/null
+  fi
+else
+  show_other "$term_ws"
+  flip_twin
+  aerospace workspace "$ws" >/dev/null 2>&1
+fi
+# Membership answered from the snapshot instead of a fresh query. Only tab
+# windows move above, and focus_saved is compared against win_id first, so a
+# stale entry here can't send us to the wrong workspace. Either half of the pair
+# counts: the saved window may be on the twin, and which half it is decides
+# which screen `settle` has to raise separately below.
+restored_ws=""
+if [[ -n "$focus_saved" && "$focus_saved" != "$win_id" ]] \
+   && restored_ws=$(awk -v f="$focus_saved" -v w="$ws" '$1==f && ($2==w || $2==w"x") {print $2; found=1} END{exit !found}' <<<"$ALL_WINS"); then
+  aerospace focus --window-id "$focus_saved" 2>/dev/null
+  restored=1
+fi
+
+# Tab creation/reordering emits trailing macOS focus events that can bounce the
+# workspace after our assert, so settle and re-assert (creation path only).
+if [[ -n "$created" ]]; then
+  sleep 0.35
+  # Still covered: the hold taken at the top of this switch is not released
+  # until the EXIT trap, so these calls land behind the same still that has been
+  # up since before anything moved. They used to need a second cover of their
+  # own, which is what made a first visit flash twice.
+  aerospace workspace "$ws" >/dev/null 2>&1
+  [[ -n "$win_id" ]] && aerospace focus --window-id "$win_id" 2>/dev/null
+fi
+
+# Re-assert the other half, after everything that could have clobbered it: every
+# `aerospace focus`/`aerospace workspace` call above changes the *global* active
+# workspace as a side effect, and on a multi-monitor setup that can silently
+# knock monitor 2 off its half (observed: landing back on a stale workspace with
+# nothing raised above the veil, i.e. a blacked-out secondary screen). Focus goes
+# last, so the keyboard ends up on the window we actually want: the terminal,
+# unless we deliberately restored focus elsewhere. Keyed on where that window
+# lives rather than assuming the terminal is on the twin, so this holds under
+# `genv term main` too.
+#
+# Only when something has actually happened since. On the fast path (no tab
+# created, focus not restored elsewhere) the raise-and-focus above is already
+# the last thing to touch either screen, and re-running the identical pair here
+# just made a second round trip to N and back to Nx. That is the other half of
+# the N/Nx flicker, and it fired on every ordinary switch: four workspace
+# changes where two would do. The re-assert still runs on the two paths that
+# earned it, which are the ones that move things after the transition.
+if [[ -n "$restored" ]]; then
+  settle "$restored_ws" "$focus_saved"
+elif [[ -n "$created" ]]; then
+  settle "$term_ws" "$win_id"
+fi
+
+# Refresh the monitor-count cache off the critical path, so plugging in a
+# display costs one stale switch rather than needing a restart. Only write a
+# real count: with AeroSpace's server down (restarting, or waiting on the
+# Accessibility grant) the query yields 0, and caching that would silently
+# demote a two-monitor setup to one until the next successful switch.
+mkdir -p "${mon_file%/*}" 2>/dev/null
+(
+  n=$(aerospace list-monitors 2>/dev/null | wc -l | tr -d ' ')
+  (( n > 0 )) && printf '%s\n' "$n" > "$mon_file"
+) &

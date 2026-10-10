@@ -1,0 +1,208 @@
+export PATH="$HOME/.local/bin:$PATH"
+
+# The next line updates PATH for the Google Cloud SDK.
+if [ -f "$HOME/google-cloud-sdk/path.zsh.inc" ]; then . "$HOME/google-cloud-sdk/path.zsh.inc"; fi
+export CLOUDSDK_PYTHON=/opt/homebrew/bin/python3.12
+export PATH="$HOME/google-cloud-sdk/bin:$PATH"
+export PATH="$HOME/.local/bin:$PATH"
+
+# Terminal window title: show running command
+preexec() { printf '\e]2;%s\a' "$1" }
+
+# Keep gcore/genv level with origin. Driven from the shell rather than launchd
+# because a LaunchAgent has no Desktop access and git dies before it reaches
+# the network (see bin/gsync). --throttle collapses every shell this window
+# opens down to one fetch per half hour, and it is backgrounded so a slow
+# network never delays a prompt. Runs before the auto-SSH block below, which
+# reads the manifest this keeps current.
+if [[ -z "${SSH_CONNECTION:-}" && -x "$HOME/.local/bin/gsync" ]]; then
+  ("$HOME/.local/bin/gsync" --throttle 1800 >>/tmp/gsync.log 2>&1 &) 2>/dev/null
+fi
+
+# The instance (gp-core) holds the manifest, presentation and passport read below.
+_g_instance=$("$HOME/.local/bin/g-instance" 2>/dev/null)
+
+# Friendly names for SSH aliases
+# Auto-SSH: fires for every new shell in an SSH workspace (splits, tabs, windows)
+_ae_ws=$(/opt/homebrew/bin/aerospace list-workspaces --focused 2>/dev/null)
+# The terminal is homed on the twin Nx when a second monitor is attached, so a
+# new shell sees "2x" where the rest of the system says "2". N and Nx are one
+# logical workspace: strip the suffix before looking anything up.
+_ae_ws="${_ae_ws%x}"
+_ae_ws_file=~/.ae-workspace-"$_ae_ws"
+
+# Hot workspaces (manifest `"hot": true`) have no fixed project: 6, 7 and 8 are
+# a pool. The first shell to open on one has nothing to connect to, so it asks;
+# `genv ws` writes $_ae_ws_file and everything below is then identical to a
+# pinned workspace. Only asked when the file is absent, so it costs a pinned
+# workspace nothing, and the binding lasts until ae-startup clears it at login.
+_ae_hot=""
+if [[ -z "$TMUX" && ! -f "$_ae_ws_file" && -n "$_ae_ws" ]]; then
+  _ae_hot=$(python3.12 -c "
+import json
+try:
+  d=json.load(open('$_g_instance/manifest.json'))
+  w=next(w for w in d['workspaces'] if str(w['number'])=='$_ae_ws')
+  print('1' if w.get('hot') else '')
+except: print('')
+" 2>/dev/null)
+  [[ -n "$_ae_hot" && "$TERM_PROGRAM" == "ghostty" ]] && genv ws "$_ae_ws"
+fi
+
+if [[ -n "$TMUX" ]]; then
+  # Already inside a (local) tmux session: never nest or re-connect.
+  :
+elif [[ -f "$_ae_ws_file" ]]; then
+ while true; do
+  _host=$(cat "$_ae_ws_file")
+  # Fields are read tint, path, *label last*: `read` puts the remainder of the
+  # line in its final variable, and a workspace name is the one field that can
+  # contain a space ("Work 2"). Named first it would eat the accent colour.
+  read -r _tint _start_path _title <<< $(python3.12 -c "
+import json
+try:
+  m=json.load(open('$_g_instance/manifest.json'))
+  p=json.load(open('$_g_instance/presentation.json'))
+  w=next(w for w in m['workspaces'] if str(w['number'])=='$_ae_ws')
+  label=w.get('name','$_host')
+  accent=p.get('workspaces',{}).get('$_ae_ws',{}).get('accent_color','#000000')
+  start=w.get('start_path','') or '-'
+  h=accent.lstrip('#')
+  ar,ag,ab=int(h[0:2],16),int(h[2:4],16),int(h[4:6],16)
+  br,bg,bb=13,13,13
+  a=0.05
+  r,g,b=int(br*(1-a)+ar*a),int(bg*(1-a)+ag*a),int(bb*(1-a)+ab*a)
+  print(f'#{r:02x}{g:02x}{b:02x}', start, label)
+except: print('#0d0d0d - $_host')
+" 2>/dev/null)
+  [[ "$_start_path" == "-" ]] && _start_path=""
+  # A hot workspace's binding beats the manifest: the manifest entry is the
+  # empty slot, the bind files are what it currently holds.
+  if [[ -n "$_ae_hot" ]]; then
+    _ae_bind_path=$(cat ~/.ae-ws-path-"$_ae_ws" 2>/dev/null)
+    _ae_bind_label=$(cat ~/.ae-ws-label-"$_ae_ws" 2>/dev/null)
+    [[ -n "$_ae_bind_path" ]] && _start_path="$_ae_bind_path"
+    [[ -n "$_ae_bind_label" ]] && _title="$_ae_bind_label"
+  fi
+  printf '\e]0;%s\a' "$_title"
+  printf '\e]11;%s\a' "$_tint"
+  rsync -q ~/Desktop/genv/tmux/tmux.conf "${_host}:.tmux.conf" 2>/dev/null || true
+  _cwd_args=()
+  [[ -n "$_start_path" ]] && _cwd_args=(-c "$_start_path")
+
+  # Sessions named ws${ws}-alpha, ws${ws}-beta, ... Persist forever.
+  # Pick the lowest letter whose session is either missing or unattached.
+  # If the lowest session appears attached (stale mosh after Mac reboot),
+  # force-detach its client so this window can claim it cleanly.
+  _ae_letters=(alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega)
+  _ae_state=$(ssh -q "$_host" "tmux list-sessions -F '#{session_name} #{session_attached} #{session_path}' 2>/dev/null" | grep "^ws${_ae_ws}-")
+  _ae_ws_session=""
+  for _ae_letter in "${_ae_letters[@]}"; do
+    _ae_name="ws${_ae_ws}-${_ae_letter}"
+    _ae_attached=$(echo "$_ae_state" | awk -v n="$_ae_name" '$1==n {print $2}')
+    _ae_path=$(echo "$_ae_state" | awk -v n="$_ae_name" '$1==n {print $3}')
+    # A hot workspace re-uses its letters across projects, so a session that
+    # already exists somewhere else is not ours to take: `new-session -As` would
+    # resume it in the old project's directory and the swap would look like it
+    # had done nothing. Prefix match, so wandering around inside the project
+    # still counts as being there.
+    if [[ -n "$_start_path" && -n "$_ae_path" && "$_ae_path" != "$_start_path"* ]]; then
+      continue
+    fi
+    if [[ -z "$_ae_attached" || "$_ae_attached" == "0" ]]; then
+      _ae_ws_session="$_ae_name"
+      break
+    fi
+    if ! pgrep -qf "tmux new-session -As ${_ae_name}( |\$)" 2>/dev/null; then
+      ssh -q "$_host" "tmux detach-client -s ${_ae_name}" 2>/dev/null
+      _ae_ws_session="$_ae_name"
+      break
+    fi
+  done
+  [[ -z "$_ae_ws_session" ]] && _ae_ws_session="ws${_ae_ws}-overflow-$$"
+
+  echo "── connecting to ${_title} (${_host}) → session ${_ae_ws_session} ──"
+  mosh "$_host" -- tmux new-session -As "$_ae_ws_session" "${_cwd_args[@]}"
+  printf '\e]0;Local\a'
+  printf '\e]111;\a'
+  echo "── disconnected from ${_host} ──"
+  # Session killed (cmd+shift+w) rather than detached → close this pane too,
+  # after a beat so the detach is visible.
+  #
+  # Distinguish "the session is gone" from "I couldn't ask". A bare `if !`
+  # treats both as gone, so a single unreachable moment (DNS not up yet after
+  # a reboot, wifi dropping, mosh failing to bring its UDP side up) made a
+  # freshly opened tab print this and exit, and Ghostty closed the surface with
+  # it. Watched it happen: the ws4 tab appeared and deleted itself 1.85s later,
+  # which is this `sleep 2`. ssh reports its own transport failures as 255,
+  # while `tmux has-session` reports a missing session as 1, so the two are
+  # cleanly separable, and when we can't reach the host, keeping the tab is
+  # always the safer guess.
+  ssh -q -o ConnectTimeout=5 "$_host" "tmux has-session -t '$_ae_ws_session'" 2>/dev/null
+  _ae_rc=$?
+  if (( _ae_rc == 255 )); then
+    echo "── couldn't reach ${_host} to check the session: keeping this tab ──"
+  elif (( _ae_rc != 0 )); then
+    echo "── session ended, closing ──"
+    sleep 2
+    exit
+  fi
+
+  # A pinned workspace is done here: detaching drops you at a local prompt, as
+  # it always has. A hot one is a slot you are borrowing, so detaching is also
+  # the moment you might want to point it somewhere else, and this is the only
+  # place that can offer it: `genv ws` writes files on the Mac, so it cannot be
+  # run from inside the remote tmux session.
+  [[ -n "$_ae_hot" ]] || break
+  printf '\n[enter] reconnect   [p] pick another project   [q] close tab\n> '
+  read -r _ae_answer
+  case "$_ae_answer" in
+    q|Q) exit ;;
+    p|P) genv ws "$_ae_ws" || exit ;;
+  esac
+ done
+else
+  printf '\e]0;Local\a'
+  # For local workspaces, cd to start path if configured
+  _start_path=$(python3.12 -c "
+import json
+try:
+  d=json.load(open('$_g_instance/manifest.json'))
+  w=next(w for w in d['workspaces'] if str(w['number'])=='$_ae_ws')
+  print(w.get('start_path',''))
+except: print('')
+" 2>/dev/null)
+  [[ -n "$_start_path" ]] && cd "$_start_path"
+
+  # Ghostty tabs on local workspaces run inside persistent local tmux, so
+  # local processes survive terminal crashes (recover: ae-recover / sessions).
+  # Same ws{N}-{letter} scheme as remote; lowest missing-or-unattached wins.
+  if [[ "$TERM_PROGRAM" == "ghostty" && -n "$_ae_ws" ]] && command -v tmux &>/dev/null; then
+    _ae_letters=(alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega)
+    _ae_state=$(tmux list-sessions -F '#{session_name} #{session_attached}' 2>/dev/null | grep "^ws${_ae_ws}-")
+    _ae_ws_session=""
+    for _ae_letter in "${_ae_letters[@]}"; do
+      _ae_name="ws${_ae_ws}-${_ae_letter}"
+      _ae_attached=$(echo "$_ae_state" | awk -v n="$_ae_name" '$1==n {print $2}')
+      if [[ -z "$_ae_attached" || "$_ae_attached" == "0" ]]; then
+        _ae_ws_session="$_ae_name"
+        break
+      fi
+    done
+    [[ -z "$_ae_ws_session" ]] && _ae_ws_session="ws${_ae_ws}-overflow-$$"
+    _cwd_args=()
+    [[ -n "$_start_path" ]] && _cwd_args=(-c "$_start_path")
+    echo "── local session ${_ae_ws_session} ──"
+    tmux new-session -As "$_ae_ws_session" "${_cwd_args[@]}"
+    echo "── detached from ${_ae_ws_session} ──"
+    if ! tmux has-session -t "$_ae_ws_session" 2>/dev/null; then
+      echo "── session ended, closing ──"
+      sleep 2
+      exit
+    fi
+  fi
+fi
+
+# The instance passport (secrets)
+_g_passport=$("$HOME/.local/bin/g-instance" env 2>/dev/null)
+[ -f "$_g_passport" ] && set -a && source "$_g_passport" && set +a

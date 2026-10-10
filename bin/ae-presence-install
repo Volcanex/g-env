@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Run from the interactive bootstrap context, which can read Desktop symlinks.
+set -euo pipefail
+repo_bin="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ssh_dir="$HOME/.ssh/ae-presence"
+mkdir -p "$ssh_dir" "$HOME/.local/bin" "$HOME/Library/LaunchAgents"
+chmod 700 "$ssh_dir"
+umask 077
+# Resolve h rather than duplicating host facts; preserve ControlPath so this
+# shares the interactive connection. Private keys stay untracked under ~/.ssh.
+/usr/bin/ssh -G h > "$ssh_dir/config.new"
+python3 - "$ssh_dir" <<'PY'
+import os
+import pathlib
+import sys
+
+directory = pathlib.Path(sys.argv[1])
+config = directory / 'config.new'
+lines = config.read_text().splitlines()
+for i, line in enumerate(lines):
+    if line.startswith('identityfile '):
+        source = pathlib.Path(os.path.expanduser(line.split(' ', 1)[1]))
+        if source.is_file():
+            target = directory / ('identity-' + str(i))
+            target.write_bytes(source.read_bytes())
+            target.chmod(0o600)
+            lines[i] = 'identityfile ' + str(target)
+config.write_text('\n'.join(lines) + '\n')
+config.replace(directory / 'config')
+PY
+[[ -L "$HOME/.local/bin/ae-presence" ]] && rm "$HOME/.local/bin/ae-presence"
+cp "$repo_bin/ae-presence" "$HOME/.local/bin/ae-presence"
+chmod 755 "$HOME/.local/bin/ae-presence"
+cp "$repo_bin/com.gabriel.ae-presence.plist" "$HOME/Library/LaunchAgents/"
+launchctl bootout "gui/$(id -u)/com.gabriel.ae-presence" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.gabriel.ae-presence.plist"

@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Re-attach to a workspace tmux session.
+# On Mac: SSHs to the appropriate host and attaches.
+# On server: attaches to a local ws* session directly.
+
+if command -v aerospace &>/dev/null; then
+  # ── Mac side ────────────────────────────────────────────────────────────────
+  ws="${1:-$("$HOME"/.local/bin/aerospace list-workspaces --focused 2>/dev/null)}"
+  # Terminal-focused means "Nx" on a two-monitor setup; the manifest keys on N.
+  ws="${ws%x}"
+
+  if [[ -z "$ws" ]]; then
+    echo "error: could not determine workspace (pass one explicitly)" >&2
+    exit 1
+  fi
+
+  # A hot workspace (manifest `"hot": true`) has no host of its own: what it is
+  # bound to right now lives in ~/.ae-workspace-<N>, written by `genv ws`. That
+  # file is written for pinned workspaces too, so preferring it is right in both
+  # cases and keeps this in step with what the shell actually connected to.
+  bind_host=$(cat "$HOME/.ae-workspace-$ws" 2>/dev/null)
+  bind_label=$(cat "$HOME/.ae-ws-label-$ws" 2>/dev/null)
+
+  read -r host label <<< $(python3 -c "
+import json, sys
+try:
+  d = json.load(open('$HOME/Desktop/gcore/manifest.json'))
+  w = next(w for w in d['workspaces'] if str(w['number'])=='$ws')
+  if not w.get('host'): sys.exit(1)
+  print(w['host'], w.get('name', w['host']))
+except: sys.exit(1)
+" 2>/dev/null)
+
+  [[ -z "$host" && -n "$bind_host" ]] && host="$bind_host"
+  [[ -n "$bind_label" ]] && label="$bind_label"
+  [[ -z "$label" ]] && label="$host"
+
+  if [[ -z "$host" ]]; then
+    echo "workspace $ws is not an SSH workspace" >&2
+    exit 1
+  fi
+
+  echo "recovering ws${ws} (${label}) → ${host}:ws${ws}"
+  exec ssh "$host" -t "exec tmux new-session -As ws${ws}"
+
+else
+  # ── Server side ─────────────────────────────────────────────────────────────
+  if [[ -n "$1" ]]; then
+    exec tmux new-session -As "ws${1}"
+  fi
+
+  # No arg: find ws* sessions and attach
+  sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^ws')
+  count=$(echo "$sessions" | grep -c . 2>/dev/null || echo 0)
+
+  if [[ $count -eq 0 ]]; then
+    echo "no ws* sessions found, starting new session" >&2
+    exec tmux new-session
+  elif [[ $count -eq 1 ]]; then
+    exec tmux attach -t "$sessions"
+  else
+    echo "multiple sessions found:"
+    echo "$sessions" | sed 's/^/  /'
+    echo "run: ae-recover <N>"
+  fi
+fi

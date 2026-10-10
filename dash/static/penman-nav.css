@@ -1,0 +1,232 @@
+/* ============================================================
+   Site nav: hamburger + slide-from-left drawer.
+   Replaces the old site-header nav links AND the separate admin-nav
+   strip. Admin links surface inside the drawer when authenticated.
+   Phosphor icons load from CDN; until they arrive, drawer items still
+   render as text+space.
+   ============================================================ */
+
+/* ---- Header line ---- */
+.site-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.site-header .brand {
+  font-family: var(--font-serif);
+  font-size: 18px;
+  text-decoration: none;
+  color: var(--fg);
+  letter-spacing: -0.005em;
+}
+.nav-spacer { flex: 1; }
+.nav-cta {
+  font-family: var(--font-sans);
+  font-size: var(--t-xs);
+  color: var(--fg-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.nav-cta:hover { color: var(--fg); }
+
+/* ---- Hamburger button: pure-CSS bars that morph to an X ---- */
+.nav-burger {
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-1);
+  padding: 8px 9px;
+  cursor: pointer;
+  display: inline-flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  width: 38px;
+  height: 38px;
+  transition: background 160ms, border-color 160ms;
+  color: var(--fg);
+}
+.nav-burger:hover { background: var(--bg-sunk); border-color: color-mix(in oklch, var(--accent) 30%, var(--rule)); }
+.burger-bar {
+  display: block;
+  width: 18px;
+  height: 1.5px;
+  background: currentColor;
+  border-radius: 1px;
+  transition: transform 220ms cubic-bezier(0.2,0.6,0.2,1), opacity 160ms;
+  transform-origin: center;
+}
+.nav-burger[aria-expanded="true"] .burger-bar:nth-child(1) {
+  transform: translateY(5.5px) rotate(45deg);
+}
+.nav-burger[aria-expanded="true"] .burger-bar:nth-child(2) {
+  opacity: 0;
+  transform: scaleX(0);
+}
+.nav-burger[aria-expanded="true"] .burger-bar:nth-child(3) {
+  transform: translateY(-5.5px) rotate(-45deg);
+}
+
+/* ---- Drawer ---- */
+.nav-drawer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 100dvh;
+  width: 320px;
+  max-width: 86vw;
+  background: var(--bg);
+  border-right: 1px solid var(--rule);
+  z-index: 100;
+  transform: translateX(-100%);
+  transition: transform 280ms cubic-bezier(0.2,0.6,0.2,1);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding-bottom: 24px;
+  box-shadow: 0 12px 48px -16px color-mix(in oklch, var(--fg) 30%, transparent);
+}
+.nav-drawer:not([hidden]) { transform: translateX(0); }
+.nav-drawer[hidden] {
+  display: flex !important;  /* keep flex for the transition */
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.nav-backdrop {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in oklch, var(--fg) 30%, transparent);
+  z-index: 90;
+  opacity: 0;
+  transition: opacity 220ms;
+  backdrop-filter: blur(2px);
+}
+.nav-backdrop:not([hidden]) { opacity: 1; }
+.nav-backdrop[hidden] { display: block !important; pointer-events: none; visibility: hidden; opacity: 0; }
+
+.nav-drawer-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px 6px;
+  border-bottom: 1px solid var(--rule);
+}
+.nav-drawer-brand {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 18px;
+  color: var(--accent);
+}
+.nav-drawer-close {
+  background: transparent;
+  border: 0;
+  padding: 6px;
+  font-size: 22px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  line-height: 1;
+}
+.nav-drawer-close:hover { color: var(--fg); }
+
+.nav-drawer-section {
+  display: flex;
+  flex-direction: column;
+  padding: 12px 6px;
+  border-bottom: 1px solid var(--rule);
+}
+.nav-drawer-section:last-of-type { border-bottom: 0; }
+.nav-drawer-section h3 {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: var(--ls-caps);
+  color: var(--fg-faint);
+  margin: 6px 12px 2px;
+}
+.nav-drawer-section a,
+.nav-drawer-section button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--font-sans);
+  font-size: var(--t-sm);
+  color: var(--fg);
+  text-decoration: none;
+  padding: 9px 12px;
+  border: 0;
+  background: transparent;
+  border-radius: var(--radius-1);
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+.nav-drawer-section a:hover,
+.nav-drawer-section button:hover {
+  background: var(--bg-sunk);
+  color: var(--fg);
+  text-decoration: none;
+}
+.nav-drawer-section a > i,
+.nav-drawer-section button > i {
+  font-size: 18px;
+  width: 20px;
+  text-align: center;
+  flex-shrink: 0;
+  color: var(--fg-muted);
+}
+.nav-drawer-section a:hover > i,
+.nav-drawer-section button:hover > i {
+  color: var(--accent);
+}
+.nav-drawer-section small {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--fg-faint);
+  font-style: italic;
+}
+.nav-drawer-section a.nav-soon {
+  color: var(--fg-muted);
+}
+.nav-drawer-section a.nav-soon:hover {
+  background: transparent;
+  cursor: default;
+}
+.nav-drawer-section .nav-logout {
+  margin-top: 8px;
+  color: var(--fg);
+}
+.nav-drawer-section .nav-logout:hover { background: color-mix(in oklch, #a04628 12%, var(--bg)); }
+.nav-drawer-section .nav-logout > i { color: #8b1a1a; }
+.nav-login {
+  color: var(--accent);
+}
+
+/* Don't render the drawer at all on the login page (keeps the screen clean) */
+body.is-admin-login .site-header,
+body.is-admin-login .nav-drawer,
+body.is-admin-login .nav-backdrop { display: none !important; }
+
+/* Smooth in-page scrolling + 70px scroll-padding so anchored sections
+   don't tuck under the sticky-ish header. */
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 70px;
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .nav-burger .burger-bar,
+  .nav-drawer { transition: none; }
+}
+
+/* On admin pages, widen the main content so the dashboards breathe. */
+body.is-admin-page .site-header,
+body.is-admin-page .site-main,
+body.is-admin-page .site-footer {
+  max-width: 1080px;
+}
+
+/* /demos used to be public; it now lives at /admin/demos, picks up
+   the wider admin width above. */
+body.is-demos-index .site-header { max-width: 1080px; }

@@ -1,0 +1,391 @@
+#!/usr/bin/env python3.12
+# Claude Code status line: context, cache, model, quotas; then title, dir and branch.
+# Reads the statusline JSON on stdin; g-system summary comes from a cache file
+# refreshed in the background (never blocks a render).
+import json
+import os
+import subprocess
+import sys
+import time
+
+A = "\033[38;2;255;79;216m"   # accent magenta
+W = "\033[97m"                # hot white
+F = "\033[38;5;245m"          # faint
+R = "\033[0m"
+
+def _c(hexcode):
+    return f"\033[38;2;{int(hexcode[0:2],16)};{int(hexcode[2:4],16)};{int(hexcode[4:6],16)}m"
+
+BLUE, GREEN, YEL, AMB, RED = _c("6ab0ff"), _c("4ade80"), _c("ffd60a"), _c("ff9f0a"), _c("ff5347")
+ORG = _c("ff6a00")
+
+def scale(value, bands):
+    # bands: [(threshold, color), ...] ascending; first threshold value is under.
+    for limit, color in bands:
+        if value < limit:
+            return color
+    return bands[-1][1]
+
+def secs_until(raw):
+    # resets_at is an epoch on this host, but accept ISO too rather than
+    # crash the whole bar if the payload shape ever changes.
+    if raw is None:
+        return None
+    try:
+        if isinstance(raw, (int, float)):
+            return float(raw) - time.time()
+        import datetime as _dt
+        t = _dt.datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=_dt.timezone.utc)
+        return (t - _dt.datetime.now(_dt.timezone.utc)).total_seconds()
+    except Exception:
+        return None
+
+
+def headroom(win, width):
+    """How much you can scale current spend for the rest of the window.
+
+    1.0 = exactly on pace. 2.0 = you could spend double from here and still
+    land on 100% at the reset. Below 1.0 = you have to cut back. Forward
+    looking -- it answers "what can I do from here", not "how did the window go".
+    """
+    used = win.get("used_percentage")
+    if used is None:
+        return None
+    used = float(used)
+    left = secs_until(win.get("resets_at"))
+    if left is None or left <= 0:
+        return None
+    left = min(left, width)
+    # Floor the elapsed term: minutes into a window, one big request would
+    # divide by ~zero and scream FREEZING off a single data point.
+    elapsed = max(width - left, 0.10 * width)
+    if used <= 0:
+        return 99.0
+    return (max(0.0, 100.0 - used) / left) / (used / elapsed)
+
+
+def slug(title, limit=20):
+    flat = "".join(ch if ch.isalnum() else "-" for ch in title.lower())
+    s = "-".join(part for part in flat.split("-") if part)
+    if len(s) <= limit:
+        return s
+    return s[:limit].rsplit("-", 1)[0] or s[:limit]
+
+
+def rename_tmux_window(title):
+    """Push the session title into the tmux window name.
+
+    The point is to answer "what is this window doing" from the tmux status bar
+    ([ws2-beta]0:fix-login), not only from inside the pane. Guarded
+    three ways: only on change (this bar re-renders constantly), only when the
+    window holds one pane (two claude panes would otherwise fight over the name
+    every render), and never fatally -- a failed tmux call leaves the old name.
+    """
+    pane = os.environ.get("TMUX_PANE")
+    if not os.environ.get("TMUX") or not pane:
+        return
+    name = slug(title)
+    if not name:
+        return
+    stamp = os.path.expanduser("~/.cache/genv/sl-wname-" + pane.lstrip("%"))
+    try:
+        if open(stamp).read() == name:
+            return
+    except Exception:
+        pass
+    try:
+        panes = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane, "#{window_panes}"],
+            capture_output=True, text=True, timeout=1,
+        ).stdout.strip()
+        if panes != "1":
+            return
+        subprocess.run(["tmux", "rename-window", "-t", pane, name],
+                       capture_output=True, timeout=1)
+        # rename-window alone leaves automatic-rename to reclaim the name on the
+        # next command change, which would silently undo this within seconds.
+        subprocess.run(["tmux", "set-window-option", "-t", pane,
+                        "automatic-rename", "off"],
+                       capture_output=True, timeout=1)
+        open(stamp, "w").write(name)
+    except Exception:
+        pass
+
+
+# BURN = plenty spare, spend it. FREEZING = nearly out, be careful.
+TEMPERATURES = (
+    (2.5, "BURN", BLUE),
+    (1.6, "HOT", GREEN),
+    (1.15, "WARM", YEL),
+    (0.85, "COOL", AMB),
+    (0.5, "COLD", ORG),
+    (None, "FREEZING", RED),
+)
+
+# Widths are hardcoded because the payload states only used_percentage and
+# resets_at, never the window width. If Anthropic changes either width the
+# percentages and clocks stay correct but the temperature word silently skews.
+WIDTHS = {"five_hour": 5 * 3600, "seven_day": 7 * 24 * 3600}
+
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+
+try:
+    os.makedirs(os.path.expanduser("~/.cache/genv"), exist_ok=True)
+    json.dump(d, open(os.path.expanduser("~/.cache/genv/sl-last.json"), "w"))
+except Exception:
+    pass
+
+bits = []
+
+# Context first: it's the stat that decides whether to keep going or compact,
+# so it sits at the far left where the eye lands, ahead of model and dir.
+cw = d.get("context_window") or {}
+used = cw.get("total_input_tokens") or cw.get("used_tokens") or cw.get("input_tokens")
+if used:
+    # Colour is tokens against auto-compact (autoCompactWindow, 250k): blue to 100k,
+    # then 50k bands, so red means compaction is under 50k away. The percent is of
+    # the model's whole window, as Claude Code reports it. g-deck uses the same bands.
+    used = int(used)
+    c = scale(used, [(100_000, BLUE), (150_000, GREEN), (200_000, YEL), (10**9, RED)])
+    pct = cw.get("used_percentage") or cw.get("percent_used")
+    size = cw.get("context_window_size") or cw.get("size")
+    if pct is None and size:
+        pct = 100 * used / size
+    pct = pct or 0
+    tok = f" {used/1000:.0f}k" if used < 1_000_000 else f" {used/1e6:.1f}M"
+    bits.append(f"{c}CTX {float(pct):.0f}%{tok}{R}")
+
+# Prompt-cache countdown: the 1h TTL runs from the last assistant message, so
+# the transcript tail's newest assistant timestamp says how long a resume stays
+# cheap. Reads only the last ~200KB; any failure just omits the bit.
+def cache_bit(path, ttl=3600):
+    import datetime as _dt
+    with open(path, "rb") as fh:
+        fh.seek(0, 2)
+        size = fh.tell()
+        fh.seek(max(0, size - 200_000))
+        tail = fh.read().decode("utf-8", "ignore")
+    for line in reversed(tail.splitlines()):
+        if '"type":"assistant"' not in line or '"timestamp"' not in line:
+            continue
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        if row.get("type") != "assistant" or not row.get("timestamp"):
+            continue
+        t = _dt.datetime.fromisoformat(str(row["timestamp"]).replace("Z", "+00:00"))
+        left = ttl - (_dt.datetime.now(_dt.timezone.utc) - t).total_seconds()
+        red, blink = "\033[31m", "\033[5;31m"
+        if left <= 0:
+            return f"{red}CT cold{R}"
+        try:
+            from zoneinfo import ZoneInfo
+            until = (t + _dt.timedelta(seconds=ttl)).astimezone(ZoneInfo("Europe/London"))
+        except Exception:
+            until = (t + _dt.timedelta(seconds=ttl)).astimezone()
+        # refreshInterval in settings redraws this while idle; the clock time stays
+        # true even if a redraw is missed.
+        col = blink if left <= 300 else red if left <= 900 else BLUE
+        return f"{col}CT {until:%H:%M}{R}"
+    return None
+
+try:
+    tp = d.get("transcript_path")
+    if tp:
+        cb = cache_bit(tp)
+        if cb:
+            bits.append(cb)
+except Exception:
+    pass
+
+model = (d.get("model") or {}).get("display_name") or ""
+if model:
+    bits.append(f"{A}{model}{R}")
+
+# Where the session runs goes at the tail of the title line, dim: it rarely
+# matters next to the quota figures.
+DIM = "\033[38;5;240m"
+where = ""
+cwd = (d.get("workspace") or {}).get("current_dir") or d.get("cwd") or ""
+if cwd:
+    where = os.path.basename(cwd) or cwd
+    try:
+        br = subprocess.run(
+            ["git", "-C", cwd, "branch", "--show-current"],
+            capture_output=True, text=True, timeout=1,
+        ).stdout.strip()
+        if br:
+            where += f" {br}"
+    except Exception:
+        pass
+
+def until(secs):
+    # Under a day it counts down; further out the weekday reads faster than 3d7h.
+    hrs = max(secs / 3600, 0)
+    if hrs >= 24:
+        import datetime as _dt
+        try:
+            from zoneinfo import ZoneInfo
+            at = _dt.datetime.now(ZoneInfo("Europe/London")) + _dt.timedelta(seconds=secs)
+        except Exception:
+            at = _dt.datetime.now() + _dt.timedelta(seconds=secs)
+        return f"{at:%a}"
+    return f"{int(hrs)}h{int((hrs % 1) * 60):02d}"
+
+
+# Claude then Codex, each as left, temperature, reset: 63% HOT Sun and
+# 93% CDX COLD Wed. The 5h window shows only once it is past half used, as
+# 40%-1h25 ahead of the week, since it rarely binds. A figure stays faint until
+# its window is past half used.
+FILL = [(50, F), (70, YEL), (90, AMB), (999, RED)]
+
+def temp_word(m):
+    for threshold, word, colour in TEMPERATURES:
+        if threshold is None or m >= threshold:
+            return word, colour
+
+
+rl = d.get("rate_limits") or {}
+room = {}
+for key, label in (("five_hour", "5h"), ("seven_day", "wk")):
+    win = rl.get(key) or {}
+    if win.get("used_percentage") is None:
+        continue
+    try:
+        hr = headroom(win, WIDTHS[key])
+        if hr is not None:
+            room[label] = hr
+    except Exception:
+        pass
+
+five = rl.get("five_hour") or {}
+if five.get("used_percentage") is not None and float(five["used_percentage"]) >= 50:
+    u = float(five["used_percentage"])
+    bit = f"{scale(u, FILL)}{round(100 - u)}%{R}"
+    left = secs_until(five.get("resets_at"))
+    if left is not None:
+        tc = scale(left / 3600, [(1.5, GREEN), (2.5, YEL), (3.5, AMB), (999, RED)])
+        bit += f"{F}-{R}{tc}{until(left)}{R}"
+    bits.append(bit)
+
+# The word is what the system acts on (temperature.py: work-hour pace, the HOT
+# BURN bar, a g-temp override marked *). Without fresh pace data it falls back to the
+# tighter window's wall-clock headroom, capped the same way. The word alone: the
+# exact multiple never changed a decision.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "context"))
+week = rl.get("seven_day") or {}
+parts = []
+if week.get("used_percentage") is not None:
+    u = float(week["used_percentage"])
+    parts.append(f"{scale(u, FILL)}{round(100 - u)}%{R}")
+try:
+    import temperature
+    st = temperature.state("claude")
+    word, mark = st["temp"], "*" if st["temp_override"] else ""
+    if not word and room:
+        word = temp_word(min(room.values()))[0]
+        if word == "BURN" and room.get("wk", 0) < temperature.CLAUDE_BURN_WALL:
+            word = "HOT"
+    if word:
+        colour = next(col for _, w, col in TEMPERATURES if w == word)
+        parts.append(f"{colour}{word}{mark}{R}")
+except Exception:
+    pass
+left = secs_until(week.get("resets_at"))
+if parts and left is not None:
+    parts.append(f"{F}{until(left)}{R}")
+if parts:
+    bits.append(" ".join(parts))
+
+# Codex from the pace cache: the window that sets its temperature supplies the
+# percentage and the reset.
+try:
+    import temperature
+    word, _, window = temperature.provider("codex") or (None, None, None)
+    colour = next((col for _, w, col in TEMPERATURES if w == word), F)
+    if word:
+        quota = {}
+        try:
+            pace = json.load(open(os.path.expanduser("~/.cache/genv/compute-pace.json")))
+            quota = next(q for q in pace["quotas"] if q.get("id") == window)
+        except Exception:
+            pass
+        parts = []
+        if quota.get("used_pct") is not None:
+            u = float(quota["used_pct"])
+            parts.append(f"{scale(u, FILL)}{round(100 - u)}%{R}")
+        mark = "*" if temperature.state("codex")["temp_override"] else ""
+        parts.append(f"{F}CDX{R} {colour}{word}{mark}{R}")
+        left = secs_until(quota.get("resets_at"))
+        if left is not None:
+            parts.append(f"{F}{until(left)}{R}")
+        bits.append(" ".join(parts))
+except Exception:
+    pass
+
+def columns():
+    # The payload carries no width, and stdout is a pipe, so ask the pane or the tty.
+    pane = os.environ.get("TMUX_PANE")
+    if os.environ.get("TMUX") and pane:
+        try:
+            out = subprocess.run(["tmux", "display-message", "-p", "-t", pane, "#{pane_width}"],
+                                 capture_output=True, text=True, timeout=1).stdout.strip()
+            if out.isdigit():
+                return int(out)
+        except Exception:
+            pass
+    try:
+        fd = os.open("/dev/tty", os.O_RDONLY)
+        try:
+            return os.get_terminal_size(fd).columns
+        finally:
+            os.close(fd)
+    except Exception:
+        pass
+    try:
+        return int(os.environ.get("COLUMNS", ""))
+    except ValueError:
+        return None
+
+
+def visible(text):
+    import re
+    return len(re.sub(r"\033\[[0-9;]*m", "", text))
+
+
+# Bits that do not fit on one row spill onto a second rather than being cut off
+# at the terminal edge. The margin covers Claude Code's own padding around the bar.
+SEP = "  "
+width = columns()
+lines = [""]
+for bit in bits:
+    if not lines[-1]:
+        lines[-1] = bit
+    elif width is None or visible(lines[-1] + SEP + bit) <= width - 4:
+        lines[-1] += SEP + bit
+    else:
+        lines.append(bit)
+
+# The session title gets its own line. Claude Code names each session from the
+# conversation and hands it over in the payload, so "what is this one working
+# on" is free -- but it is the one variable-width field, and sharing a row with
+# the numbers means a narrow terminal drops whichever end loses. The directory
+# and branch trail it dimly; with neither, no row is spent on nothing.
+title = (d.get("session_name") or "").strip()
+tail = []
+if title:
+    shown = title if len(title) <= 72 else title[:71] + "\u2026"
+    tail.append(f"{W}{shown}{R}")
+    rename_tmux_window(title)
+if where:
+    tail.append(f"{DIM}{where}{R}")
+if tail:
+    lines.append(f"{F}\u21b3{R} " + "  ".join(tail))
+
+print("\n".join(lines))

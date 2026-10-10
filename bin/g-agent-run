@@ -1,0 +1,299 @@
+#!/usr/bin/env python3
+"""Vendor-neutral headless agent runner. Unattended jobs call this, never a vendor CLI.
+
+    g-agent-run --role gather|verify|bulk|judge|review --prompt-file F --workdir D [--web] [--out F]
+                [--sandbox read-only|workspace-write|danger-full-access] [--tools] [--connectors] [--meta F]
+                [--stakes routine|normal|important|critical] [--allow-claude] [--claude-only] [--domain ui]
+
+Prints the model's final message on stdout (and to --out). Providers come from
+context/value.py when providers.json has value rules, with each point's effort;
+the old provider order and effort per role are the fallback. A provider is skipped or failed
+over on: a missing CLI, non-zero exit, an auth/quota/usage-limit message, a
+timeout, empty output, or its quota in ~/.cache/genv/compute-pace.json being below
+the floor. Every attempt is logged to stderr and ~/.cache/genv/g-agent-run.jsonl.
+--meta F writes {provider, model, attempts, usage} for the caller.
+--tools lets the job run Bash in --workdir (a role can also set "tools": true in providers.json).
+With --sandbox workspace-write it may also edit files and, on Codex, reach the network; with
+read-only it can only read and run commands. Inside Codex's bubblewrap sandbox root has no
+rights to files another user owns, so a repo on h owned by the workspace user failed every write job with
+"bwrap: Can't mkdir <workdir>/.agents: Permission denied"; the fix is an ACL for root
+(`setfacl -R -m u:root:rwX -m d:u:root:rwX <repo>`, applied on h 2026-10-05, with a default
+ACL on the workspace for new repos), and the job reports reason "sandbox" with that hint.
+danger-full-access is what Claude's tools mode already amounts to. Claude gets Read,Bash(+Write,Edit); Codex gets
+`exec --sandbox` plus network_access=true when writable. --connectors (Claude only) keeps the
+account's MCP connectors for jobs that cannot work without them; the servers listed under "connectors" in providers.json are allowed (an
+unlisted connector is denied, because the permission mode never asks). Codex has
+none, so such a job falling over to Codex must report failure rather than guess.
+The prompt always goes over stdin, so its length is not limited by argv.
+Exit 0 on success, 3 when every provider failed, 2 on bad usage.
+
+Adding a vendor: write `def gemini(model, effort, web, sandbox, workdir, prompt, timeout)`
+returning (argv, stdin_text, parse) where parse(stdout, tmpfile) -> (text, usage), put it
+in ADAPTERS, then list "gemini:<model>" in providers.json. Nothing else changes.
+The adapter signature is adapter(model, effort, web, sandbox, workdir, prompt, timeout, tools=False,
+connectors=None); a new vendor may omit the two trailing keywords by accepting **_.
+Stub (not implemented, and flags unverified against the real CLI):
+    # def gemini(model, effort, web, sandbox, workdir, prompt, timeout, **_):
+    #     argv = ['gemini', '-m', model, '-p', '-'] + (['--yolo'] if sandbox != 'read-only' else [])
+    #     return argv, prompt, lambda out, f: (out.strip(), {})
+Env overrides for tests: G_AGENT_PROVIDERS, G_AGENT_PACE, G_AGENT_MODE, G_AGENT_LOG.
+"""
+import argparse
+import datetime as dt
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+import tempfile
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent / 'context'))
+import temperature  # noqa: E402
+import value  # noqa: E402
+CACHE = Path.home() / '.cache/genv'
+# Messages the CLIs print when the plan, login or quota is the problem. The exit
+# code already triggers fallback; this only labels the reason in the log.
+AUTH_QUOTA = re.compile(r"usage limit|hit your .*limit|rate.?limit|quota|credit balance|insufficient|"
+                        r"unauthori[sz]ed|\b401\b|\b403\b|\b429\b|not logged in|please (run )?/?log ?in|"
+                        r"login required|invalid api key|oauth token|token has expired|account.*(suspend|disabled|banned)|"
+                        r"overloaded|subscription", re.I)
+
+
+def claude(model, effort, web, sandbox, workdir, prompt, timeout, tools=False, connectors=None):
+    writable = sandbox != 'read-only'
+    names = (['Read'] + (['Bash'] if tools else []) + (['Write'] if writable else []) + (['Edit'] if writable and tools else [])
+             + (['WebFetch'] if web else []))
+    allowed = names + list(connectors or [])  # dontAsk denies any MCP tool not listed, so connectors must be named
+    argv = ['claude', '-p', '--model', model, '--effort', effort, '--tools', ','.join(names), '--allowedTools', ','.join(allowed),
+            '--permission-mode', 'dontAsk', '--no-session-persistence', '--output-format', 'json',
+            '--setting-sources', ''] + ([] if connectors is not None else ['--strict-mcp-config']) + ['--disable-slash-commands',
+            '--system-prompt', 'You are a precise unattended worker. Do exactly the task and return only what it asks for.']
+
+    def parse(out, _file):
+        data = json.loads(out)
+        if data.get('is_error'):
+            raise RuntimeError(str(data.get('result') or data.get('subtype') or 'claude reported an error'))
+        u = data.get('usage') or {}
+        return (data.get('result') or '').strip(), {
+            'input': u.get('input_tokens', 0) + u.get('cache_creation_input_tokens', 0) + u.get('cache_read_input_tokens', 0),
+            'output': u.get('output_tokens', 0), 'cost_usd': data.get('total_cost_usd')}
+    return argv, prompt, parse
+
+
+# Off for worker jobs, measured 2026-10-05: an empty turn drops from 20.9K to 15.8K input
+# tokens, which is Codex's own floor (a bare CODEX_HOME measures 16.1K). Hooks would
+# inject the G-System context; multi-agent tools let a worker spawn its own swarm.
+LEAN_CODEX = ['--disable', 'hooks', '--disable', 'image_generation', '--disable', 'plugins', '--disable', 'apps',
+              '--disable', 'goals', '--disable', 'tool_suggest', '--disable', 'sleep_tool',
+              '-c', 'agents.enabled=false']
+
+
+def codex(model, effort, web, sandbox, workdir, prompt, timeout, tools=False, connectors=None):
+    outfile = Path(workdir) / '.g-agent-last.txt'
+    # Codex always has shell access inside its sandbox; its workspace-write sandbox has no network unless asked.
+    # Workers run lean: every tool call resends the system prompt, so each feature's tool schema is paid per turn.
+    net = ['-c', 'sandbox_workspace_write.network_access=true'] if tools and sandbox == 'workspace-write' else []
+    argv = ['codex'] + (['--search'] if web else []) + [
+        'exec'] + LEAN_CODEX + ['-m', model, '-c', f'model_reasoning_effort={effort}'] + net + ['--sandbox', sandbox,
+        '--skip-git-repo-check', '--ephemeral', '--json', '-C', str(workdir), '-o', str(outfile), '-']
+
+    def parse(out, _file):
+        usage = {}
+        for line in out.splitlines():
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if event.get('type') == 'turn.completed':
+                u = event.get('usage') or {}
+                usage = {'input': usage.get('input', 0) + u.get('input_tokens', 0),
+                         'output': usage.get('output', 0) + u.get('output_tokens', 0) + u.get('reasoning_output_tokens', 0)}
+        text = outfile.read_text().strip() if outfile.exists() else ''
+        outfile.unlink(missing_ok=True)  # the workdir may be a real directory (brain/.pulse), not scratch
+        return text, usage
+    return argv, prompt, parse
+
+
+ADAPTERS = {'claude': claude, 'codex': codex}
+
+
+def log(path, record):
+    line = json.dumps(record, ensure_ascii=False)
+    print(f'[g-agent-run] {line}', file=sys.stderr, flush=True)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('a') as stream:
+            stream.write(line + '\n')
+    except OSError:
+        pass
+
+
+def quota_low(vendor, config, pace_path):
+    """Return a reason string when the vendor's quota is below the floor, else ''."""
+    try:
+        pace = json.loads(Path(pace_path).read_text())
+        age = (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(pace['computed_at'])).total_seconds()
+        if age > 7 * 86400:
+            return ''
+        ids = set(config.get('quota_ids', {}).get(vendor, []))
+        floor = config.get('quota_floor_pct', 3)
+        for q in pace['quotas']:
+            if q['id'] in ids and q['remaining_pct'] < floor:
+                return f"{q['id']} has {q['remaining_pct']:g}% left (floor {floor}%)"
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return ''
+
+
+def provider_order(args, config, config_path, pace_path):
+    if 'value' in config:
+        try:
+            ranked = value.rank(args.role, args.stakes, args.allow_claude, args.claude_only, domain=getattr(args, 'domain', None),
+                                providers_path=config_path, pace_path=pace_path,
+                                mode_path=os.environ.get('G_AGENT_MODE'))
+            if not ranked:
+                return []
+            order = [ranked[0]]
+            other = next((i for i in ranked if i['provider'] != ranked[0]['provider']), None)
+            if other:
+                order.append(other)
+            order += [i for i in ranked if i not in order]
+            return order[:3]
+        except Exception:
+            pass
+    return [{'spec': spec, 'effort': config.get('effort', {}).get(args.role, 'medium')}
+            for spec in config['roles'][args.role] if not args.claude_only or spec.startswith('claude:')]
+
+
+def attempt(spec, args, config, prompt, workdir, pace_path=None, facts=None, point=None):
+    facts = {} if facts is None else facts
+    vendor, _, model = spec.partition(':')
+    adapter = ADAPTERS.get(vendor)
+    if adapter is None:
+        return None, {}, 'unknown-adapter', f'no adapter for {vendor}'
+    if shutil.which(vendor) is None:
+        return None, {}, 'missing-cli', f'{vendor} not on PATH'
+    timeout = config.get('timeout_s', {}).get(args.role, 900)
+    effort = point['effort'] if point else config.get('effort', {}).get(args.role, 'medium')
+    if vendor == 'claude' and not (args.allow_claude or args.claude_only or args.stakes == 'critical'
+                                    or value.values_taste(args.role, getattr(args, 'domain', None))):
+        t = temperature.provider('claude', path=pace_path, mode_path=os.environ.get('G_AGENT_MODE'))
+        if t and t[0] in temperature.GATED:
+            return None, {}, 'claude-cold', f'Claude is {t[0]} x{t[1]:.2f}: ask the operator, then rerun with --allow-claude'
+    sandbox = args.sandbox or config.get('sandbox', {}).get(args.role, 'read-only')
+    tools = args.tools or bool(config.get('tools', {}).get(args.role))
+    web = args.web or bool(config.get('web', {}).get(args.role))
+    facts.update(effort=effort, web=web, sandbox=sandbox)
+    started = time.monotonic()
+    argv, stdin_text, parse = adapter(model, effort, web, sandbox, workdir, prompt, timeout,
+                                      tools=tools,
+                                      connectors=config.get('connectors', []) if args.connectors else None)
+    proc = subprocess.Popen(argv, cwd=workdir, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, start_new_session=True)
+    try:
+        out, err = proc.communicate(stdin_text, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        facts['secs'] = timeout
+        return None, {}, 'timeout', f'no answer in {timeout}s'
+    facts['secs'] = round(time.monotonic() - started)
+    combined = (err or '') + '\n' + (out[-2000:] if proc.returncode else '')
+    # Only a failed job counts: a command the agent ran inside the job can print the same bwrap text.
+    walled = re.search(r"bwrap: Can't \w+ [^ ]+: Permission denied", (err or '') + (out or ''))
+    sandbox_hint = ('Codex sandbox cannot write here (a repo owned by another user; inside bwrap root has '
+                    'no rights to it). Fix: setfacl -R -m u:root:rwX -m d:u:root:rwX <repo>. ' + ' '.join(combined.split())[-200:])
+    if walled and proc.returncode:
+        return None, {}, 'sandbox', sandbox_hint
+    if proc.returncode:
+        kind = 'auth-or-quota' if AUTH_QUOTA.search(combined) else 'exit'
+        return None, {}, kind, f'exit {proc.returncode}: ' + ' '.join(combined.split())[-300:]
+    try:
+        text, usage = parse(out, None)
+    except (ValueError, RuntimeError, OSError) as error:
+        kind = 'auth-or-quota' if AUTH_QUOTA.search(str(error)) else 'bad-output'
+        return None, {}, kind, str(error)[:300]
+    if not text:
+        return (None, {}, 'sandbox', sandbox_hint) if walled else (None, {}, 'empty', 'provider returned no final message')
+    return text, usage, None, ''
+
+
+def default_label(point, role, prompt):
+    """The compute page lists jobs by label; an unlabelled job reads as its model, role and brief heading."""
+    model = (point.get('id') or point['spec'].rpartition(':')[2]).split('-')[0]
+    title = next((line.strip().lstrip('#').strip() for line in prompt.splitlines() if line.strip()), '')
+    return f'{model.capitalize()} {role}: {title}' if title else f'{model.capitalize()} {role}'
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--role', required=True)
+    parser.add_argument('--prompt-file', required=True)
+    parser.add_argument('--workdir', required=True)
+    parser.add_argument('--web', action='store_true')
+    parser.add_argument('--sandbox', choices=['read-only', 'workspace-write', 'danger-full-access'])
+    parser.add_argument('--tools', action='store_true')
+    parser.add_argument('--connectors', action='store_true')
+    parser.add_argument('--allow-claude', action='store_true', help='permit a Claude fallback while Claude is COLD or FREEZING')
+    parser.add_argument('--stakes', choices=value.STAKES, default='normal')
+    parser.add_argument('--claude-only', action='store_true', help='restrict MCP or private data jobs to Claude')
+    parser.add_argument('--domain', choices=value.domains(), help='kind of work, e.g. ui (see providers.json value_domains)')
+    parser.add_argument('--label', default=os.environ.get('G_AGENT_LABEL', ''), help='what the job is, for the compute page')
+    parser.add_argument('--out')
+    parser.add_argument('--meta')
+    args = parser.parse_args(argv)
+    config_path = os.environ.get('G_AGENT_PROVIDERS', HERE.parent / 'context/providers.json')
+    pace_path = os.environ.get('G_AGENT_PACE', CACHE / 'compute-pace.json')
+    log_path = Path(os.environ.get('G_AGENT_LOG', CACHE / 'g-agent-run.jsonl'))
+    try:
+        config = json.loads(Path(config_path).read_text())
+        order = provider_order(args, config, config_path, pace_path)
+        prompt = Path(args.prompt_file).read_text()
+    except (OSError, ValueError, KeyError) as error:
+        print(f'g-agent-run: cannot start: {error!r}', file=sys.stderr)
+        return 2
+    workdir = Path(args.workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    attempts = []
+    for point in order:
+        spec = point['spec']
+        vendor = spec.partition(':')[0]
+        base = {'ts': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'), 'role': args.role, 'provider': spec}
+        if point.get('id'):
+            base.update(point=point['id'], effort=point['effort'])
+        base['label'] = (args.label or default_label(point, args.role, prompt))[:120]
+        low = quota_low(vendor, config, pace_path)
+        if low:
+            attempts.append({**base, 'status': 'skipped', 'reason': 'quota-floor', 'detail': low})
+            log(log_path, attempts[-1])
+            continue
+        # The agent deck reads the running job's point from this line in err.txt.
+        print('[g-agent-run] start ' + json.dumps(base, ensure_ascii=False), file=sys.stderr, flush=True)
+        facts = {}
+        text, usage, reason, detail = attempt(spec, args, config, prompt, workdir, pace_path, facts, point)
+        base.update(facts)
+        if text is None:
+            attempts.append({**base, 'status': 'failed', 'reason': reason, 'detail': detail})
+            log(log_path, attempts[-1])
+            continue
+        attempts.append({**base, 'status': 'ok', 'usage': usage})
+        log(log_path, attempts[-1])
+        if args.out:
+            Path(args.out).write_text(text + '\n')
+        if args.meta:
+            Path(args.meta).write_text(json.dumps({'provider': spec, 'usage': usage, 'attempts': attempts}))
+        print(text)
+        return 0
+    if args.meta:
+        Path(args.meta).write_text(json.dumps({'provider': None, 'attempts': attempts}))
+    print('g-agent-run: every provider failed: ' + '; '.join(f"{a['provider']} {a['reason']}" for a in attempts), file=sys.stderr)
+    return 3
+
+
+if __name__ == '__main__':
+    sys.exit(main())

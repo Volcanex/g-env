@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""Override a provider's temperature from a session: g-temp claude hot 3h, g-temp claude off.
+
+Without a duration the override lasts to the end of the London day, as on the compute
+page. The override lives on h; b pulls it every 15 minutes, so b relays to h over SSH.
+"""
+import argparse
+import datetime as dt
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'context'))
+import temperature
+
+
+def hours(text):
+    t = text.lower()
+    try:
+        if t.endswith('m'):
+            return float(t[:-1]) / 60
+        return float(t.rstrip('h'))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f'{text!r} is not a duration like 3h or 90m')
+
+
+def show():
+    now = dt.datetime.now(dt.timezone.utc)
+    for name in temperature.PROVIDERS:
+        s = temperature.state(name, now=now)
+        line = f"{name}: {s['temp'] or '?'} (measured {s['measured'] or '?'})"
+        if s['temp_override'] or s['speed'] != 'NORMAL':
+            until = dt.datetime.fromisoformat(s['expires_at']).astimezone(temperature.LONDON)
+            line += f", override {s['temp_override'] or ''} {s['speed']} until {until:%a %H:%M}".replace('  ', ' ')
+        print(line)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('provider', nargs='?', choices=temperature.PROVIDERS)
+    parser.add_argument('temp', nargs='?', type=str.upper, choices=temperature.WORDS + ('OFF',))
+    parser.add_argument('duration', nargs='?', type=hours)
+    args = parser.parse_args(argv)
+    if Path(os.path.expanduser('~/.config/genv/compute-token')).exists():
+        return subprocess.call(['ssh', 'h', 'g-temp', *(argv if argv is not None else sys.argv[1:])])
+    if args.provider and args.temp:
+        speed = (temperature.overrides().get(args.provider) or {}).get('speed')
+        temp = None if args.temp == 'OFF' else args.temp
+        temperature.set_override(args.provider, temp=temp, speed=speed if temp or speed else None,
+                                 by='g-temp', hours=args.duration)
+    elif args.provider:
+        parser.error('give a temperature, or off')
+    show()
+
+
+if __name__ == '__main__':
+    sys.exit(main())

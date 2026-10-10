@@ -1,0 +1,39 @@
+.DS_Store
+__pycache__/
+*.backup.*
+*.backup-*
+
+# Secrets: these must never travel.
+.env
+.env.*
+!.env.example
+
+# SSH keys, known_hosts and config are the operator's: an instance carries them
+# in env/ssh/, and the bootstraps link them. None belong here.
+ssh/
+
+# Defense-in-depth: explicitly block auth files even though we don't symlink them.
+**/auth.json
+**/.credentials.json
+**/credentials.json
+
+# AeroSpace fork build artifacts
+aerospace-fork/.build/
+aerospace-fork/.deps/
+aerospace-fork/.debug/
+
+# Claude Code session transcripts. Machine-local logs, not config: they churn
+# on every session, and a permanently dirty tree is what let a month of real
+# drift hide in the noise. Deliberately not purged from history, only untracked
+# from here on.
+claude/projects/
+
+# Claude Code plan files: session state like the transcripts, and the operator's.
+claude/plans/
+
+# Skills are a small curated set vendored directly in the repo (no sync step).
+# Everything under skills/ is tracked: g-* are bespoke, the rest are
+# pinned upstream skills (see scripts/vendor-skills.sh for provenance).
+
+# Python venvs (rebuild from venvs/*.requirements.txt)
+venvs/*/

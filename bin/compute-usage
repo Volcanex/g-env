@@ -1,0 +1,463 @@
+#!/usr/bin/env python3
+"""Show sanitized quota/balance snapshots for Claude, Codex, OpenRouter and Jev.
+
+Default reads the cache written by `compute-usage --refresh` (run by
+compute-usage.timer every 15 min); `--json` is the machine contract.
+"""
+import argparse
+import datetime as dt
+import importlib.machinery
+import json
+import math
+import os
+from pathlib import Path
+import select
+import shutil
+import subprocess
+import sys
+import time
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'context'))
+from instance import instance  # noqa: E402
+
+CACHE = Path.home() / ".cache/genv/sl-last.json"
+ARCHIVE = Path.home() / ".cache/genv/compute-usage.jsonl"
+STALE_AFTER = 900
+LATEST = Path.home() / ".cache/genv/compute-usage-latest.json"
+ROW_STALE_AFTER = 1800  # two missed timer ticks
+CLAUDE_CREDS = Path.home() / ".claude/.credentials.json"
+GCORE_ENV = instance("env")
+PROVIDERS = ("claude", "codex", "openrouter", "jev")
+
+
+class CodexReadError(Exception):
+    pass
+
+
+def _number(value):
+    try:
+        value = float(value)
+        return value if math.isfinite(value) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _timestamp(value):
+    if isinstance(value, str):
+        try:
+            return dt.datetime.fromisoformat(value.replace('Z', '+00:00')).isoformat()
+        except ValueError:
+            return None
+    value = _number(value)
+    return value
+
+
+def _claude_window(value):
+    if not isinstance(value, dict):
+        return None
+    used = _number(value.get("used_percentage"))
+    if used is None or not 0 <= used <= 100:
+        return None
+    return {"used_percent": used, "remaining_percent": 100 - used,
+            "resets_at": _timestamp(value.get("resets_at"))}
+
+
+def read_claude(path=CACHE, now=None):
+    now = time.time() if now is None else now
+    try:
+        stat = path.stat()
+        age = max(0, int(now - stat.st_mtime))
+        payload = json.loads(path.read_text())
+        limits = payload.get("rate_limits") or {}
+        windows = {key: item for key in ("five_hour", "seven_day")
+                   if (item := _claude_window(limits.get(key))) is not None}
+        return {"status": "ok" if windows else "unavailable", "windows": windows,
+                "cached_at": dt.datetime.fromtimestamp(stat.st_mtime, dt.timezone.utc).isoformat(),
+                "age_seconds": age, "stale": age > STALE_AFTER}
+    except FileNotFoundError:
+        return {"status": "unavailable", "reason": "cache_missing", "stale": True}
+    except (OSError, ValueError, AttributeError):
+        return {"status": "unavailable", "reason": "cache_unreadable", "stale": True}
+
+
+def _codex_request(timeout=10, executable="codex"):
+    if timeout <= 0:
+        raise CodexReadError("timeout must be positive")
+    if not shutil.which(executable):
+        raise CodexReadError("codex CLI unavailable")
+    try:
+        proc = subprocess.Popen([executable, "app-server", "--listen", "stdio://"],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, bufsize=0)
+    except OSError:
+        raise CodexReadError("could not start app-server") from None
+    requests = (
+        {"method": "initialize", "id": 1, "params": {
+            "clientInfo": {"name": "compute-usage", "version": "1.0"},
+            "capabilities": {}}},
+        {"method": "initialized", "params": {}},
+        {"method": "account/rateLimits/read", "id": 2, "params": {}},
+    )
+    deadline = time.monotonic() + timeout
+    try:
+        def send(request):
+            proc.stdin.write((json.dumps(request, separators=(",", ":")) + "\n").encode())
+            proc.stdin.flush()
+        send(requests[0])
+        buf = b""
+        fd = proc.stdout.fileno()
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([fd], [], [], max(0, deadline - time.monotonic()))
+            if not ready:
+                break
+            chunk = os.read(fd, 8192)
+            if not chunk:
+                raise CodexReadError("app-server exited before quota reply")
+            buf += chunk
+            if len(buf) > 1024 * 1024:
+                raise CodexReadError("app-server reply exceeded size limit")
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                try:
+                    message = json.loads(line)
+                except (ValueError, UnicodeDecodeError):
+                    continue
+                if message.get('id') == 1:
+                    if 'error' in message:
+                        raise CodexReadError('app-server initialization failed')
+                    send(requests[1])
+                    send(requests[2])
+                elif message.get("id") == 2:
+                    if "error" in message:
+                        raise CodexReadError("app-server quota read failed")
+                    return message.get("result") or {}
+        raise CodexReadError(f"app-server timed out after {timeout:g}s")
+    except (BrokenPipeError, OSError):
+        raise CodexReadError("app-server communication failed") from None
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        proc.stdin.close()
+        proc.stdout.close()
+
+
+def _codex_window(value):
+    if not isinstance(value, dict):
+        return None
+    window = {}
+    used = _number(value.get("usedPercent"))
+    if used is not None and 0 <= used <= 100:
+        window["used_percent"] = used
+    elif value.get("usedPercent") is None and "usedPercent" in value:
+        window["used_percent"] = None
+    duration = value.get("windowDurationMins")
+    if duration is None and "windowDurationMins" in value:
+        window["window_minutes"] = None
+    elif isinstance(duration, int) and duration >= 0:
+        window["window_minutes"] = duration
+    if "resetsAt" in value:
+        window["resets_at"] = _timestamp(value["resetsAt"])
+    return window or None
+
+
+def read_codex(timeout=10, fetcher=_codex_request):
+    try:
+        result = fetcher(timeout=timeout)
+    except CodexReadError as exc:
+        return {"status": "unavailable", "reason": str(exc)}
+    except Exception:
+        return {"status": "unavailable", "reason": "app-server quota read failed"}
+    buckets = result.get("rateLimitsByLimitId")
+    if isinstance(buckets, dict) and buckets:
+        snapshots = [(key, value) for key, value in sorted(buckets.items())
+                     if isinstance(value, dict)]
+    elif isinstance(result.get("rateLimits"), dict):
+        value = result["rateLimits"]
+        snapshots = [(value.get("limitId"), value)]
+    else:
+        snapshots = []
+    output = []
+    for bucket_id, value in snapshots:
+        windows = {key: item for key in ("primary", "secondary")
+                   if (item := _codex_window(value.get(key))) is not None}
+        output.append({"bucket": bucket_id if isinstance(bucket_id, str) else None,
+                       "label": value.get("limitName")[:100] if isinstance(value.get("limitName"), str) else None,
+                       "windows": windows})
+    return {"status": "ok" if any(item['windows'] for item in output) else "unavailable",
+            "buckets": output}
+
+
+def snapshot(timeout=10, claude_path=CACHE, fetcher=_codex_request, now=None):
+    return {"timestamp": dt.datetime.fromtimestamp(
+                time.time() if now is None else now, dt.timezone.utc).isoformat(),
+            "claude": read_claude(claude_path, now), "codex": read_codex(timeout, fetcher)}
+
+
+def _iso(value):
+    """Epoch seconds, ISO string or None -> ISO-8601 UTC string or None."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return dt.datetime.fromtimestamp(value, dt.timezone.utc).isoformat()
+    ts = _timestamp(value)
+    return ts if isinstance(ts, str) else None
+
+
+def _row(provider, metric, fetched_at, *, remaining=None, used=None, limit=None,
+         unit=None, resets_at=None, status="ok", note=None, label=None):
+    return {"provider": provider, "metric": metric, "label": label, "status": status,
+            "remaining": remaining, "used": used, "limit": limit, "unit": unit,
+            "resets_at": _iso(resets_at), "fetched_at": fetched_at, "note": note}
+
+
+def _env_key(name):
+    if os.environ.get(name):
+        return os.environ[name]
+    if GCORE_ENV is None:
+        return None
+    try:
+        for line in GCORE_ENV.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("export "):
+                line = line[7:]
+            if line.startswith(name + "="):
+                return line.split("=", 1)[1].strip().strip("\"'")
+    except OSError:
+        pass
+    return None
+
+
+def _get_json(url, headers, timeout=10):
+    req = urllib.request.Request(url, headers={"User-Agent": "compute-usage/2", **headers})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read(1024 * 1024))
+
+
+def fetch_claude(now, timeout=10):
+    """Live from the OAuth usage endpoint (read-only: the token is never
+    refreshed here, so it cannot race Claude Code's own refresh); falls back
+    to the statusline cache, whose own mtime becomes fetched_at."""
+    stamp = _iso(now)
+    try:
+        token = json.loads(CLAUDE_CREDS.read_text())["claudeAiOauth"]["accessToken"]
+        data = _get_json("https://api.anthropic.com/api/oauth/usage",
+                         {"Authorization": f"Bearer {token}",
+                          "anthropic-beta": "oauth-2025-04-20"}, timeout)
+        rows = []
+        for key in ("five_hour", "seven_day"):
+            win = data.get(key)
+            used = _number(win.get("utilization")) if isinstance(win, dict) else None
+            if used is not None and 0 <= used <= 100:
+                rows.append(_row("claude", key, stamp, remaining=100 - used, used=used,
+                                 limit=100, unit="percent", resets_at=win.get("resets_at")))
+        if rows:
+            return rows
+        raise ValueError("no windows")
+    except Exception:
+        pass
+    cached = read_claude(CACHE, now)
+    if cached["status"] != "ok":
+        return [_row("claude", "five_hour", None, status="unavailable",
+                     note=cached.get("reason", "no rate-limit fields"))]
+    return [_row("claude", key, cached["cached_at"], remaining=w["remaining_percent"],
+                 used=w["used_percent"], limit=100, unit="percent", resets_at=w["resets_at"],
+                 note="statusline cache (live read failed)")
+            for key, w in cached["windows"].items()]
+
+
+def fetch_codex(now, timeout=10):
+    stamp = _iso(now)
+    result = read_codex(timeout)
+    if result["status"] != "ok":
+        return [_row("codex", "primary", None, status="unavailable", note=result.get("reason"))]
+    rows = []
+    for bucket in result["buckets"]:
+        for key, win in bucket["windows"].items():
+            used = win.get("used_percent")
+            if used is None:
+                continue
+            name = bucket.get("bucket") or ""
+            metric = key if name in ("", "codex") else f"{name}:{key}"
+            rows.append(_row("codex", metric, stamp, remaining=100 - used, used=used,
+                             limit=100, unit="percent", resets_at=win.get("resets_at"),
+                             label=bucket.get("label"),
+                             note=f"{win['window_minutes']} min window" if win.get("window_minutes") else None))
+    return rows or [_row("codex", "primary", None, status="unavailable", note="no quota windows")]
+
+
+def fetch_openrouter(now, timeout=10):
+    stamp = _iso(now)
+    key = _env_key("OPENROUTER_API_KEY")
+    if not key:
+        return [_row("openrouter", "credits", None, status="unavailable", note="OPENROUTER_API_KEY not set")]
+    auth = {"Authorization": f"Bearer {key}"}
+    credits = _get_json("https://openrouter.ai/api/v1/credits", auth, timeout)["data"]
+    total, spent = _number(credits.get("total_credits")), _number(credits.get("total_usage"))
+    rows = [_row("openrouter", "credits", stamp, remaining=None if total is None or spent is None else total - spent,
+                 used=spent, limit=total, unit="USD")]
+    try:
+        info = _get_json("https://openrouter.ai/api/v1/key", auth, timeout)["data"]
+        for field, metric in (("usage_daily", "usage_today"), ("usage_weekly", "usage_week"),
+                              ("usage_monthly", "usage_month")):
+            value = _number(info.get(field))
+            if value is not None:
+                rows.append(_row("openrouter", metric, stamp, used=value, unit="USD"))
+    except Exception:
+        pass
+    return rows
+
+
+def fetch_jev(now, timeout=10):
+    # docs.typesafe.ai (llms.txt, api.md, checked 2026-10-04): the only endpoint is
+    # POST /v1/systemone, which returns per-request token counts. No balance, billing
+    # or quota route exists, so nothing is reported rather than invented.
+    return [_row("jev", "usage", None, status="unsupported", note="no usage API")]
+
+
+FETCHERS = {"claude": fetch_claude, "codex": fetch_codex,
+            "openrouter": fetch_openrouter, "jev": fetch_jev}
+
+
+def refresh(path=LATEST, now=None, timeout=10):
+    """Fetch every provider, keep each provider's previous rows when its fetch
+    fails (they age into stale instead of vanishing), write the cache atomically."""
+    now = time.time() if now is None else now
+    try:
+        previous = json.loads(path.read_text()).get("rows", [])
+    except (OSError, ValueError):
+        previous = []
+
+    def run(name):
+        try:
+            return name, FETCHERS[name](now, timeout), None
+        except Exception as exc:
+            return name, None, f"{type(exc).__name__}"
+
+    rows = []
+    with ThreadPoolExecutor(len(FETCHERS)) as pool:
+        results = {n: (r, e) for n, r, e in pool.map(run, PROVIDERS)}
+    for name in PROVIDERS:
+        got, err = results[name]
+        if got is not None and not (len(got) == 1 and got[0]["status"] == "unavailable"
+                                    and any(p["provider"] == name and p["status"] == "ok" for p in previous)):
+            rows += got
+            continue
+        old = [p for p in previous if p["provider"] == name and p["status"] == "ok"]
+        reason = err or (got[0].get("note") if got else None) or "fetch failed"
+        if old:
+            rows += [dict(p, note=f"refresh failed ({reason}); last good value") for p in old]
+        else:
+            rows += got or [_row(name, "usage", None, status="unavailable", note=reason)]
+    payload = {"fetched_at": _iso(now), "rows": rows}
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, separators=(",", ":")))
+    os.replace(tmp, path)
+    return payload
+
+
+def load(path=LATEST, now=None):
+    """Cached rows with `stale` and `age_seconds` derived at read time."""
+    now = time.time() if now is None else now
+    try:
+        rows = json.loads(path.read_text())["rows"]
+    except (OSError, ValueError, KeyError):
+        return None
+    for r in rows:
+        try:
+            age = now - dt.datetime.fromisoformat(r["fetched_at"]).timestamp()
+            r["age_seconds"] = max(0, int(age))
+            r["stale"] = age > ROW_STALE_AFTER
+        except (TypeError, ValueError):
+            r["age_seconds"], r["stale"] = None, r["status"] == "ok"
+        if r["status"] != "ok":
+            r["stale"] = True if r["status"] == "unavailable" else False
+    return rows
+
+
+def _human(rows):
+    out = []
+    for r in rows:
+        head = f"{r['provider']:<11}{r['label'] or r['metric']:<22}"
+        if r["status"] != "ok":
+            out.append(f"{head}{r['status']}" + (f" ({r['note']})" if r["note"] else ""))
+            continue
+        if r["unit"] == "percent":
+            val = f"{r['remaining']:g}% remaining"
+        elif r["remaining"] is not None:
+            val = f"{r['remaining']:.2f} {r['unit']} remaining ({r['used']:.2f} used)"
+        else:
+            val = f"{r['used']:.2f} {r['unit']} used"
+        if r["resets_at"]:
+            val += f"; resets {r['resets_at']}"
+        if r["stale"]:
+            val += f" [STALE {r['age_seconds']}s old]"
+        out.append(head + val)
+    return "\n".join(out)
+
+
+def record(value, path=ARCHIVE):
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as stream:
+            stream.write(json.dumps(value, separators=(",", ":")) + "\n")
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="print the per-provider JSON contract")
+    parser.add_argument("--refresh", action="store_true", help="fetch all providers and write the cache (timer mode)")
+    parser.add_argument("--pace", action="store_true", help="print the compute-pace cache (quota burn vs working hours) as JSON")
+    parser.add_argument("--raw", action="store_true", help="legacy live Claude/Codex snapshot, no cache")
+    parser.add_argument("--record", action="store_true", help="append sanitized snapshot (mode 600)")
+    parser.add_argument("--timeout", type=float, default=10, help="per-provider read timeout in seconds (default: 10)")
+    args = parser.parse_args(argv)
+    if not math.isfinite(args.timeout) or args.timeout <= 0:
+        parser.error("--timeout must be positive")
+    if args.pace:
+        pace = importlib.machinery.SourceFileLoader(
+            "compute_pace", str(Path(__file__).resolve().parent / "compute-pace")).load_module()
+        print(json.dumps(pace.load(), separators=(",", ":")))
+        return 0
+    if args.raw:
+        data = snapshot(args.timeout)
+        print(json.dumps(data, separators=(",", ":")))
+        if args.record:
+            record(data)
+        return 0
+    if args.refresh or load() is None:
+        payload = refresh(timeout=args.timeout)
+        if args.record:
+            try:
+                record(payload)
+            except OSError:
+                print("compute-usage: could not write archive", file=sys.stderr)
+                return 1
+        if args.refresh and not args.json:
+            print(f"refreshed {len(payload['rows'])} rows at {payload['fetched_at']}")
+            return 0
+    rows = load()
+    if args.json:
+        print(json.dumps(rows, separators=(",", ":")))
+    else:
+        print(_human(rows))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

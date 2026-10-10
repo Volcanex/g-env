@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+# gauth: put Google login in front of any g-system hostname.
+#
+# Cloudflare Access does the work: the identity provider is configured once
+# (`gauth setup-google`) and every hostname after that is one `gauth on`.
+# The OAuth client secret is stored at Cloudflare, never on a host.
+#
+#   gauth setup-google <client-id> <client-secret>   one-time, wires the IdP
+#   gauth on <target> [email ...]                    gate it (default: GAUTH_EMAIL)
+#   gauth on <target> anyone                         gate it, but let anyone in
+#   gauth off <target>                               remove the gate
+#   gauth list                                       what is gated, and by whom
+#
+# `anyone` is a real access model, not an off switch: a visitor still signs in,
+# so the origin still gets Cf-Access-Authenticated-User-Email and can keep each
+# person's data apart. It is the setting for a public demo that wants accounts
+# without owning any auth code. Removing the gate entirely (`off`) is what
+# throws identity away.
+#
+# <target> is a hostname, or a hostname plus one or more paths to gate only
+# part of it: `gauth on host.com/app,/api` leaves everything else public.
+# Paths of one app share a single token, so a page under /app may call /api
+# without a second login round trip; two separate apps would 302 that XHR
+# to a login screen it cannot follow.
+#
+# Requires CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID, and the instance's
+# GAUTH_ZONE (the Cloudflare zone), GAUTH_TEAM (the Access team domain) and
+# GAUTH_EMAIL (who `gauth on` lets in by default). The environment wins; the
+# instance passport fills in the rest.
+set -euo pipefail
+
+SESSION="24h"
+
+passport() {
+  local file; file="$("$(dirname "$0")/g-instance" env)"
+  [[ -f "$file" ]] || { echo "error: $1 unset and ${file:-no instance passport} not found" >&2; return 1; }
+  (set -a; source "$file"; printf '%s' "${!1:-}")
+}
+for v in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID GAUTH_ZONE GAUTH_TEAM GAUTH_EMAIL; do
+  [[ -n "${!v:-}" ]] || printf -v "$v" '%s' "$(passport "$v")"
+done
+: "${CLOUDFLARE_API_TOKEN:?}" "${CLOUDFLARE_ACCOUNT_ID:?}" "${GAUTH_ZONE:?}" "${GAUTH_TEAM:?}" "${GAUTH_EMAIL:?}"
+ZONE_NAME="$GAUTH_ZONE" TEAM="$GAUTH_TEAM" DEFAULT_EMAIL="$GAUTH_EMAIL"
+
+API="https://api.cloudflare.com/client/v4"
+ACC="$API/accounts/$CLOUDFLARE_ACCOUNT_ID"
+
+cf() {
+  local method="$1" url="$2" body="${3:-}"
+  local args=(-s -X "$method" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+              -H "Content-Type: application/json")
+  [[ -n "$body" ]] && args+=(-d "$body")
+  curl "${args[@]}" "$url"
+}
+
+# Unwrap the Cloudflare envelope: print .result, or die with the API's own
+# message. Every call goes through this so no failure passes silently.
+unwrap() {
+  python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+if not d.get("success"):
+    msgs = "; ".join(e.get("message", "?") for e in d.get("errors", [])) or "unknown error"
+    sys.exit("cloudflare: " + msgs)
+json.dump(d.get("result"), sys.stdout)
+'
+}
+
+jqp() { python3 -c "import sys,json;d=json.load(sys.stdin);$1"; }
+
+google_idp_id() {
+  cf GET "$ACC/access/identity_providers" | unwrap \
+    | jqp 'print(next((i["id"] for i in d if i["type"]=="google"), ""))'
+}
+
+# Matched on the bare hostname: one app owns a host, whether it gates all of
+# it or a few paths, so `off` and the already-gated check work either way.
+app_id_for() {
+  cf GET "$ACC/access/apps" | unwrap \
+    | jqp "print(next((a['id'] for a in d if (a.get('domain') or '').split('/')[0]=='$1'), ''))"
+}
+
+# "host/app,/api" or "host/app" -> hostname on stdout line 1, URIs after.
+parse_target() {
+  python3 -c '
+import sys
+t = sys.argv[1].strip()
+host, _, rest = t.partition("/")
+print(host)
+paths = [p.strip().strip("/") for p in rest.split(",") if p.strip().strip("/")]
+for p in paths:
+    print(host + "/" + p)
+if not paths:
+    print(host)
+' "$1"
+}
+
+zone_id() {
+  cf GET "$API/zones?name=$ZONE_NAME" | unwrap | jqp 'print(d[0]["id"] if d else "")'
+}
+
+# Access only sees traffic for proxied records, so a grey-clouded host must go
+# orange or the gate is simply bypassed by hitting the origin.
+ensure_proxied() {
+  local host="$1" zid rec
+  zid="$(zone_id)"
+  [[ -n "$zid" ]] || { echo "error: zone $ZONE_NAME not found" >&2; exit 1; }
+  rec="$(cf GET "$API/zones/$zid/dns_records?name=$host" | unwrap \
+        | jqp 'print(d[0]["id"] + " " + str(d[0]["proxied"]) if d else "")')"
+  [[ -n "$rec" ]] || { echo "error: no DNS record for $host" >&2; exit 1; }
+  local rid="${rec% *}" proxied="${rec#* }"
+  if [[ "$proxied" == "True" ]]; then
+    echo "  dns: already proxied"
+  else
+    cf PATCH "$API/zones/$zid/dns_records/$rid" '{"proxied":true}' | unwrap >/dev/null
+    echo "  dns: flipped to proxied"
+  fi
+}
+
+cmd_setup_google() {
+  local cid="${1:?usage: gauth setup-google <client-id> <client-secret>}"
+  local secret="${2:?usage: gauth setup-google <client-id> <client-secret>}"
+  if [[ -n "$(google_idp_id)" ]]; then
+    echo "google IdP already configured, nothing to do"; return
+  fi
+  python3 -c '
+import json, sys
+print(json.dumps({"name": "Google", "type": "google",
+                  "config": {"client_id": sys.argv[1], "client_secret": sys.argv[2]}}))
+' "$cid" "$secret" | {
+    read -r payload
+    cf POST "$ACC/access/identity_providers" "$payload" | unwrap >/dev/null
+  }
+  echo "google IdP created. Redirect URI Google must have on file:"
+  echo "  https://$TEAM/cdn-cgi/access/callback"
+}
+
+cmd_on() {
+  local target="${1:?usage: gauth on <target> [email ...]}"; shift
+  local emails=("$@"); [[ ${#emails[@]} -gt 0 ]] || emails=("$DEFAULT_EMAIL")
+
+  local parsed; parsed="$(parse_target "$target")"
+  local host; host="$(echo "$parsed" | head -1)"
+  local uris; uris="$(echo "$parsed" | tail -n +2 | paste -sd,)"
+
+  local gid; gid="$(google_idp_id)"
+  [[ -n "$gid" ]] || { echo "error: no google IdP: run 'gauth setup-google' first" >&2; exit 1; }
+  local otp; otp="$(cf GET "$ACC/access/identity_providers" | unwrap \
+                   | jqp 'print(next((i["id"] for i in d if i["type"]=="onetimepin"), ""))')"
+
+  [[ -z "$(app_id_for "$host")" ]] || { echo "error: $host is already gated" >&2; exit 1; }
+
+  echo "$host"
+  ensure_proxied "$host"
+
+  # One-time PIN stays allowed alongside Google: if the OAuth client ever
+  # breaks, an emailed code is the way back in rather than a locked-out host.
+  local idps="$gid${otp:+,$otp}"
+  local app_id
+  app_id="$(python3 -c '
+import json, sys
+host, session, idps, uris = sys.argv[1], sys.argv[2], sys.argv[3].split(","), sys.argv[4].split(",")
+print(json.dumps({"name": host.split(".")[0], "type": "self_hosted",
+                  "session_duration": session, "allowed_idps": idps,
+                  "auto_redirect_to_identity": False,
+                  "destinations": [{"type": "public", "uri": u} for u in uris]}))
+' "$host" "$SESSION" "$idps" "$uris" | {
+    read -r payload
+    cf POST "$ACC/access/apps" "$payload" | unwrap | jqp 'print(d["id"])'
+  })"
+  echo "  gates: ${uris//,/, }"
+
+  python3 -c '
+import json, sys
+who = sys.argv[1:]
+if who == ["anyone"]:
+    name, include = "anyone signed in", [{"everyone": {}}]
+else:
+    name, include = "allow", [{"email": {"email": e}} for e in who]
+print(json.dumps({"name": name, "decision": "allow", "include": include}))
+' "${emails[@]}" | {
+    read -r payload
+    cf POST "$ACC/access/apps/$app_id/policies" "$payload" | unwrap >/dev/null
+  }
+  if [[ "${emails[*]}" == "anyone" ]]; then
+    echo "  policy: anyone who signs in"
+  else
+    echo "  policy: ${emails[*]}"
+  fi
+}
+
+cmd_off() {
+  local target="${1:?usage: gauth off <target>}"
+  local host; host="$(parse_target "$target" | head -1)"
+  local app_id; app_id="$(app_id_for "$host")"
+  [[ -n "$app_id" ]] || { echo "error: $host is not gated" >&2; exit 1; }
+  cf DELETE "$ACC/access/apps/$app_id" | unwrap >/dev/null
+  echo "$host: gate removed (DNS left proxied)"
+}
+
+cmd_list() {
+  echo "identity providers:"
+  cf GET "$ACC/access/identity_providers" | unwrap \
+    | jqp 'print("\n".join("  %-12s %s" % (i["type"], i.get("name") or "") for i in d) or "  (none)")'
+  echo "gated:"
+  local apps; apps="$(cf GET "$ACC/access/apps" | unwrap)"
+  local ids; ids="$(echo "$apps" | jqp 'print(" ".join(a["id"] for a in d if a.get("domain")))')"
+  if [[ -z "$ids" ]]; then echo "  (none)"; return; fi
+  for id in $ids; do
+    # Every gated URI, not just `domain` - that field only ever shows the
+    # first destination, which hides the rest of a path-scoped app.
+    local dom; dom="$(echo "$apps" | jqp "print(', '.join(x['uri'] for x in (next(a for a in d if a['id']=='$id').get('destinations') or [])) or next(a for a in d if a['id']=='$id')['domain'])")"
+    local who; who="$(cf GET "$ACC/access/apps/$id/policies" | unwrap \
+      | jqp 'rules=[r for p in (d or []) for r in p.get("include",[])]
+print("anyone who signs in" if any("everyone" in r for r in rules)
+      else ", ".join(r["email"]["email"] for r in rules if "email" in r) or "-")')"
+    printf '  %-44s %s\n' "$dom" "$who"
+  done
+}
+
+case "${1:-}" in
+  setup-google) shift; cmd_setup_google "$@" ;;
+  on)           shift; cmd_on "$@" ;;
+  off)          shift; cmd_off "$@" ;;
+  list)         shift; cmd_list "$@" ;;
+  *) sed -n '2,12p' "$0" | sed 's/^# \?//'; exit 1 ;;
+esac

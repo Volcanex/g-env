@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# Keep this machine's supersystem checkouts level with origin.
+#
+# gcore is the topology SSOT, but it lives in *git*: h and this Mac both hold
+# ordinary checkouts and neither is authoritative. The failure this exists to
+# prevent: in Aug 2026 the Mac sat 9 commits behind for a month while h sat 2
+# ahead, so ae-switch/zshrc/sessions were all reading month-old topology and
+# a workspace rename never left the laptop. Pulling alone would not have
+# fixed it (half the drift was unpushed commits), so this pushes too.
+#
+# Never destructive: a dirty tree is reported and skipped, and pulls are
+# --ff-only so a genuine divergence surfaces as a warning instead of a merge
+# commit nobody asked for.
+
+set -uo pipefail
+
+# systemd oneshot units are not guaranteed a HOME, and `set -u` turns that into
+# a hard error before the first repo is even looked at.
+: "${HOME:=$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)}"
+: "${HOME:=/root}"
+# Must be exported, not just set: git is a child process, and without HOME in
+# its environment it cannot find the credential store and fails the fetch with
+# "could not read Username for 'https://github.com'".
+export HOME
+
+# The checkouts are the ones this script belongs to: g-instance (beside it,
+# through the ~/.local/bin link) names the framework and the instance, and
+# g-core and the platform repos are their siblings. A stray unwired clone, such as the Mac's
+# $HOME/genv, is never synced: a copy nothing reads, kept up to date, only
+# teaches you to ignore the output. Old and new names of one repo (genv-linux
+# and g-env-linux on h) are collapsed by realpath below.
+self="${BASH_SOURCE[0]}"
+while [[ -L "$self" ]]; do
+  target="$(readlink "$self")"
+  [[ "$target" == /* ]] || target="$(dirname "$self")/$target"
+  self="$target"
+done
+bin="$(dirname "$self")"
+framework="$("$bin/g-instance" framework)"
+parent="$(dirname "$framework")"
+REPOS=(
+  "$("$bin/g-instance" 2>/dev/null)" "$framework" "$parent/g-core"
+  "$parent/g-env-linux" "$parent/genv-linux" "$parent/g-env-mac" "$parent/genv-mac"
+)
+
+verbose=0
+throttle=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -v) verbose=1 ;;
+    --throttle) throttle="${2:-1800}"; shift ;;
+  esac
+  shift
+done
+
+# --throttle exists because this cannot run under launchd on the Mac. The
+# dotfiles and both checkouts live under ~/Desktop, and ~/.gitconfig symlinks
+# into ~/Desktop/genv; a LaunchAgent is not granted Desktop access, so git
+# dies with "unable to access '$HOME/.gitconfig': Operation not
+# permitted" before it reaches the network. Granting Full Disk Access to
+# /bin/bash would fix it and is not worth it. Instead the shell drives the
+# schedule: every interactive login runs this, and the stamp file collapses
+# that back to at most one fetch per throttle window.
+STAMP="${TMPDIR:-/tmp}/gsync.stamp"
+if [[ "$throttle" != "0" && -f "$STAMP" ]]; then
+  now=$(date +%s)
+  last=$(cat "$STAMP" 2>/dev/null || echo 0)
+  (( now - last < throttle )) && exit 0
+fi
+date +%s > "$STAMP" 2>/dev/null || true
+
+warn() { printf 'gsync: %s\n' "$1" >&2; }
+say()  { [[ $verbose -eq 1 ]] && printf 'gsync: %s\n' "$1"; return 0; }
+
+status=0
+seen=""
+
+for repo in "${REPOS[@]}"; do
+  [[ -d "$repo/.git" ]] || continue
+  real="$(cd "$repo" && pwd -P)"
+  case "$seen" in *"|$real|"*) continue ;; esac
+  seen="$seen|$real|"
+  name="$(basename "$repo")"
+
+  # Report git's own stderr rather than guessing at "offline": under launchd
+  # the usual causes are a missing credential helper or TCC blocking ~/Desktop,
+  # and both look nothing like a dropped network.
+  if ! fetch_err="$(git -C "$repo" fetch -q origin 2>&1)"; then
+    warn "$name: fetch failed: ${fetch_err:-no output}"
+    status=1
+    continue
+  fi
+
+  branch="$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  if [[ "$branch" == "HEAD" ]]; then
+    warn "$name: detached HEAD, skipped"
+    status=1
+    continue
+  fi
+
+  upstream="origin/$branch"
+  git -C "$repo" rev-parse --verify -q "$upstream" >/dev/null || {
+    say "$name: no $upstream, skipped"
+    continue
+  }
+
+  behind="$(git -C "$repo" rev-list --count "HEAD..$upstream")"
+  ahead="$(git -C "$repo" rev-list --count "$upstream..HEAD")"
+  dirty="$(git -C "$repo" status --porcelain | wc -l | tr -d ' ')"
+
+  # A dirty tree is the thing that strands work, so it is always loud,
+  # even when there is nothing to pull.
+  if [[ "$dirty" != "0" ]]; then
+    warn "$name: $dirty uncommitted file(s): commit and push, or they strand here"
+    status=1
+  fi
+
+  if [[ "$behind" != "0" ]]; then
+    if [[ "$dirty" != "0" ]]; then
+      warn "$name: $behind behind, not pulling over a dirty tree"
+    elif git -C "$repo" merge --ff-only -q "$upstream" 2>/dev/null; then
+      printf 'gsync: %s: pulled %s commit(s)\n' "$name" "$behind"
+    else
+      warn "$name: $behind behind but cannot fast-forward: diverged, fix by hand"
+      status=1
+    fi
+  fi
+
+  if [[ "$ahead" != "0" && "$dirty" == "0" ]]; then
+    if git -C "$repo" push -q origin "$branch" 2>/dev/null; then
+      printf 'gsync: %s: pushed %s commit(s)\n' "$name" "$ahead"
+    else
+      warn "$name: $ahead unpushed commit(s), push failed"
+      status=1
+    fi
+  fi
+
+  [[ "$behind" == "0" && "$ahead" == "0" && "$dirty" == "0" ]] && say "$name: level"
+done
+
+exit $status

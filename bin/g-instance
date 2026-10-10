@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Print the operator's instance (gp-core, or legacy gcore) beside the g-env checkout.
+#   g-instance [dir|env|manifest|framework]
+# With no instance it prints nothing, explains on stderr and exits 0: callers fall
+# back to framework defaults. context/instance.py is the Python twin: keep the order identical.
+set -euo pipefail
+
+real() {  # readlink -f, which macOS bash 3.2 lacks
+  local path="$1" target dir n=0
+  while [[ -L "$path" && $n -lt 40 ]]; do
+    target="$(readlink "$path")"
+    if [[ "$target" != /* ]]; then target="$(dirname "$path")/$target"; fi
+    path="$target"; n=$((n + 1))
+  done
+  dir="$(cd -P "$(dirname "$path")" 2>/dev/null && pwd)" || dir="$(dirname "$path")"
+  echo "$dir/$(basename "$path")"
+}
+
+kind="${1:-dir}" legacy="" file=""
+case "$kind" in
+  dir|framework) ;;
+  env) legacy="${GCORE_ENV:-}" file=".env" ;;
+  manifest) legacy="${GCORE_MANIFEST:-}" file="manifest.json" ;;
+  *) echo "usage: g-instance [dir|env|manifest|framework]" >&2; exit 2 ;;
+esac
+
+framework="${G_ENV:-${GENV:-${GENV_DIR:-}}}"
+if [[ -z "$framework" ]]; then framework="$(dirname "$(real "${BASH_SOURCE[0]}")")/.."; fi
+if resolved="$(cd -P "$framework" 2>/dev/null && pwd)"; then framework="$resolved"; fi
+if [[ "$kind" == framework ]]; then echo "$framework"; exit 0; fi
+if [[ -n "$legacy" ]]; then echo "$legacy"; exit 0; fi
+
+dir="${GCORE_DIR:-${GSITE_GCORE_DIR:-${G_INSTANCE:-}}}"
+if [[ -z "$dir" ]]; then
+  parent="$(dirname "$framework")"
+  for name in gp-core gcore; do
+    if [[ -d "$parent/$name" ]]; then dir="$parent/$name"; break; fi
+  done
+fi
+if [[ -z "$dir" ]]; then
+  echo "g-instance: no instance found; set G_INSTANCE or create gp-core beside g-env from g-core/examples. Using framework defaults." >&2
+  exit 0
+fi
+echo "$dir${file:+/$file}"

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Deploy the environment repo to a remote server and bootstrap it.
+# Usage: ae-deploy <ssh-host>
+#   ae-deploy h
+#   ae-deploy root@newserver.com
+set -euo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+host="${1:-}"
+
+if [[ -z "$host" ]]; then
+  echo "usage: ae-deploy <ssh-host>  (alias or user@host)" >&2
+  exit 1
+fi
+
+echo "── deploying environment → ${host} ──"
+
+rsync -az --delete \
+  --exclude='.git' \
+  --exclude='ssh/' \
+  --exclude='ghostty/' \
+  --exclude='aerospace/' \
+  --exclude='dash/' \
+  --exclude='.env' \
+  --exclude='claude/sessions/' \
+  --exclude='claude/cache/' \
+  --exclude='claude/history.jsonl' \
+  --exclude='claude/telemetry/' \
+  --exclude='claude/projects/**/*.jsonl' \
+  --exclude='codex/auth.json' \
+  --exclude='codex/cache/' \
+  --exclude='codex/logs/' \
+  --exclude='codex/sessions/' \
+  "$REPO/" "${host}:~/environment/"
+
+ssh "$host" "bash ~/environment/server-bootstrap.sh"
+
+# Push secrets after bootstrap (the passport never travels via rsync). The
+# script is the instance's: it names the operator's services and paths.
+"$("$(dirname "${BASH_SOURCE[0]}")/g-instance")/push-secrets" "$host"

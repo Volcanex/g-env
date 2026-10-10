@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "plugins": {
+    "swift-lsp@claude-plugins-official": [
+      {
+        "scope": "user",
+        "installPath": "/Users/gabriel/.claude/plugins/cache/claude-plugins-official/swift-lsp/1.0.0",
+        "version": "1.0.0",
+        "installedAt": "2026-08-06T09:03:36.990Z",
+        "lastUpdated": "2026-08-06T09:03:36.990Z"
+      }
+    ]
+  }
+}

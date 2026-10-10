@@ -1,0 +1,5 @@
+[project]
+name = "genv"
+version = "1.0.0"
+description = "Environment wiring: dotfiles, shell, tooling"
+dependencies = ["rich"]

@@ -1,0 +1,313 @@
+/* ============================================================
+   Gabriel Penman: Engineering Calm
+   Core tokens: color + type
+   ============================================================ */
+
+/* ---- Google Fonts: Newsreader (serif), Inter (sans), JetBrains Mono ---- */
+@import url('https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  /* ---------------- COLOR ----------------
+     Three-color palette. No gradients, no shadows, no glass.
+     Pure black reads as aggressive on warm backgrounds, so we use near-black. */
+
+  /* Neutrals */
+  --bg:          #fcfaf3;   /* paper: bright, barely warm, not floral */
+  --bg-sunk:    #f5f1e4;   /* recessed surface */
+  --bg-ink:     #1c1e22;   /* dark code-block surface, warm-black */
+  --fg-on-ink:  #e8e4d8;   /* code-block body text, warm cream */
+  --fg-on-ink-muted: #8a8578; /* code-block comments */
+  --fg:          #1a1a1a;   /* near-black, primary text */
+  --fg-muted:   #6b6b6b;   /* metadata, sub-labels */
+  --fg-faint:   #a0a0a0;   /* rule lines, disabled */
+  --rule:        #e8e2cf;   /* thin horizontal rules between sections */
+
+  /* Accent: used sparingly. Links, primary CTA, single rule or accent per page. */
+  --accent:       #2d4a6b;  /* muted ink blue (default) */
+  --accent-alt:  #a04628;   /* deep rust (alternative, one-or-other) */
+
+  /* ---------------- CHART PALETTE ----------------
+     For graphs, data visualization, small diagrams. The three-color brand
+     rule is for chrome; charts need more than three. Warm-toned, desaturated,
+     all harmonious on the cream background. Use categorical palette when
+     series are genuinely distinct; use the sequential ramp for ordered data. */
+  --chart-1: #2d4a6b;  /* ink blue: primary series */
+  --chart-2: #a04628;  /* deep rust */
+  --chart-3: #5e7544;  /* moss green */
+  --chart-4: #b58b3a;  /* ochre */
+  --chart-5: #6d5976;  /* dusty plum */
+  --chart-6: #3f6e75;  /* teal-slate */
+
+  /* Sequential ink ramp, for ordered/monochrome data. */
+  --chart-ink-1: #dbe1eb;
+  --chart-ink-2: #a8b6cb;
+  --chart-ink-3: #6e85a4;
+  --chart-ink-4: #2d4a6b;
+  --chart-ink-5: #1b2d41;
+
+  /* Chart chrome: axes, gridlines, annotations. */
+  --chart-axis:     #6b6b6b;   /* same as --fg-muted */
+  --chart-gridline: #c9c1a7;   /* same as --rule */
+  --chart-label:    #1a1a1a;   /* serif or sans, matches body */
+
+  /* Semantic aliases */
+  --fg1: var(--fg);
+  --fg2: var(--fg-muted);
+  --fg3: var(--fg-faint);
+  --link: var(--accent);
+
+  /* ---------------- TYPE ----------------
+     One serif, one sans, one mono. No decoration. */
+  --font-serif: 'Newsreader', 'Source Serif 4', 'Iowan Old Style', Georgia, serif;
+  --font-sans:  'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono:  'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* Size scale: flat and large. No microtype. */
+  --t-xs:   13px;   /* sans labels, metadata, nav */
+  --t-sm:   14px;   /* sans body-small */
+  --t-base: 19px;   /* serif body */
+  --t-lg:   22px;   /* serif lead */
+  --t-h3:   24px;   /* minor headings */
+  --t-h2:   28px;   /* section headings (rarely used, prefer sans caps) */
+  --t-h1:   32px;   /* page titles */
+  --t-display: 40px;/* upper bound */
+
+  /* Line heights: generous */
+  --lh-tight: 1.25;
+  --lh-body:  1.65;
+  --lh-loose: 1.75;
+
+  /* Weights */
+  --w-regular: 400;
+  --w-medium:  500;
+  --w-semi:    600;
+
+  /* Letter-spacing for small-sans caps labels */
+  --ls-caps: 0.08em;
+
+  /* ---------------- LAYOUT ----------------
+     Single column, left-aligned, 640 to 720px content. */
+  --measure:       680px;    /* ideal content width */
+  --measure-wide: 760px;    /* occasional wider blocks */
+  --gutter:        24px;
+  --space-1:  8px;
+  --space-2: 16px;
+  --space-3: 24px;
+  --space-4: 32px;
+  --space-5: 48px;
+  --space-6: 64px;
+  --space-7: 96px;
+
+  /* Rules + borders */
+  --rule-thin: 1px solid var(--rule);
+  --border:    1px solid var(--fg);
+
+  /* Radii: almost nothing. Square by default. */
+  --radius-0: 0px;
+  --radius-1: 2px;   /* buttons, code blocks, images: barely there */
+
+  /* No shadows. Kept as var for discipline. */
+  --shadow: none;
+}
+
+/* ============================================================
+   SEMANTIC ELEMENT STYLES
+   Apply document-wide. A page that includes this file gets
+   the Engineering Calm look for free.
+   ============================================================ */
+
+html, body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-serif);
+  font-size: var(--t-base);
+  line-height: var(--lh-body);
+  font-weight: var(--w-regular);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Page titles: serif, weight 400, ~32px. No bold drama. */
+h1, .h1 {
+  font-family: var(--font-serif);
+  font-size: var(--t-h1);
+  font-weight: var(--w-regular);
+  line-height: var(--lh-tight);
+  letter-spacing: -0.005em;
+  margin: 0 0 var(--space-2);
+}
+
+/* Section headings: small sans caps, NOT big serif. */
+h2, .h2 {
+  font-family: var(--font-sans);
+  font-size: var(--t-xs);
+  font-weight: var(--w-medium);
+  text-transform: uppercase;
+  letter-spacing: var(--ls-caps);
+  color: var(--fg-muted);
+  margin: var(--space-5) 0 var(--space-2);
+}
+
+h3, .h3 {
+  font-family: var(--font-serif);
+  font-size: var(--t-h3);
+  font-weight: var(--w-regular);
+  line-height: var(--lh-tight);
+  margin: var(--space-4) 0 var(--space-2);
+}
+
+/* Sub-label under page title. Sans, 13px, muted. */
+.sublabel {
+  font-family: var(--font-sans);
+  font-size: var(--t-xs);
+  color: var(--fg-muted);
+  font-weight: var(--w-regular);
+  margin: 0 0 var(--space-3);
+}
+
+/* Nav: small sans, name left / link right. */
+.nav {
+  font-family: var(--font-sans);
+  font-size: var(--t-xs);
+  color: var(--fg);
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+/* Body prose */
+p {
+  margin: 0 0 var(--space-3);
+  max-width: var(--measure);
+}
+
+/* Links: underlined, accent color. No hover animation beyond a
+   slightly thicker underline. */
+a {
+  color: var(--link);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+a:hover {
+  text-decoration-thickness: 2px;
+}
+
+/* Buttons: one per page max. Rectangular, 1px border, accent text. */
+.btn {
+  display: inline-block;
+  font-family: var(--font-sans);
+  font-size: var(--t-sm);
+  font-weight: var(--w-medium);
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-1);
+  padding: 10px 20px;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color 120ms linear;
+}
+.btn:hover {
+  border-width: 2px;
+  padding: 9px 19px;
+  text-decoration: none;
+  background: transparent;
+}
+
+/* Metadata / small sans. */
+.meta, small {
+  font-family: var(--font-sans);
+  font-size: var(--t-xs);
+  color: var(--fg-muted);
+}
+
+/* Caps label (section labels like RECENT WORK, WRITING). */
+.caps {
+  font-family: var(--font-sans);
+  font-size: var(--t-xs);
+  font-weight: var(--w-medium);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+/* Horizontal rules: thin, sparingly used to divide sections. */
+hr, .rule {
+  border: 0;
+  border-top: var(--rule-thin);
+  margin: var(--space-4) 0;
+}
+
+/* Code + data. */
+code, pre, kbd, samp {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+}
+pre {
+  background: var(--bg-ink);
+  color: var(--fg-on-ink);
+  border-radius: var(--radius-1);
+  padding: var(--space-3);
+  overflow-x: auto;
+  line-height: var(--lh-body);
+  font-size: 15px;
+}
+pre .comment { color: var(--fg-on-ink-muted); }
+pre .key     { color: #9ab8d4; }  /* muted ink-blue tint */
+pre .str     { color: #c9a27a; }  /* warm sand */
+pre .tag     { color: #c58a6f; }  /* muted rust tint for html tags */
+
+/* Blockquote: left rule, serif italic, no big pull-quote drama. */
+blockquote {
+  margin: var(--space-4) 0;
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--rule);
+  color: var(--fg-muted);
+  font-style: italic;
+  max-width: var(--measure);
+}
+
+/* Small data tables. */
+table {
+  font-family: var(--font-sans);
+  font-size: var(--t-sm);
+  border-collapse: collapse;
+  margin: var(--space-3) 0;
+}
+th, td {
+  text-align: left;
+  padding: 8px 16px 8px 0;
+  border-bottom: var(--rule-thin);
+}
+th {
+  font-weight: var(--w-medium);
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  font-size: var(--t-xs);
+  letter-spacing: var(--ls-caps);
+}
+
+/* Images: full content width, square corners by default. */
+img {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-1);
+}
+
+/* Document container. */
+.page {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: var(--space-5) var(--gutter) var(--space-7);
+}
+
+/* Footer: sans, small, muted. */
+.footer {
+  font-family: var(--font-sans);
+  font-size: var(--t-xs);
+  color: var(--fg-muted);
+  margin-top: var(--space-6);
+  padding-top: var(--space-3);
+  border-top: var(--rule-thin);
+}

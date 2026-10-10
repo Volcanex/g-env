@@ -1,0 +1,400 @@
+#!/usr/bin/env python3
+"""Compute pace: quota burn against the operator's real working hours, as data.
+
+Writes ~/.cache/genv/compute-pace.json (timer: compute-pace.timer, every 15 min)
+for the session-context loader and gcommand's /compute page. It states numbers
+and carries no policy: what to do about them is the orchestrator's call.
+
+Active hours use the session-gap logic of the instance's session collector
+(ledger/sessions.py under GWAGES, default g-wages beside g-env): every human prompt
+across every manifest host lands on one union timeline, each gap is capped at IDLE,
+the last prompt of a day gets TAIL. Here that timeline is kept as intervals so any
+window can be measured. Without a collector there are no active hours: the quotas
+still show, with no burn rate and no projection.
+
+Burn rate is the quota used between the earliest recorded observation in the last
+48h (same window) and now, divided by Claude+Codex work hours in that span. It is
+"% per hour of his presence", a proxy for leverage, not metered per-hour spend.
+Safe burn is the rate that would spend what is left down to SAFE_LEFT_PCT over the
+work hours expected before reset: the line not to cross to avoid running out.
+
+Usual pace is the mean over the trailing 7 days, widening to 14 or 28 only when the
+shorter window has too few active days. The 28-day weekday-hour profile gives the
+shape of a typical week; it is scaled to the usual pace so projections follow the
+recent level without one quiet day zeroing a weekday.
+"""
+import argparse
+import datetime as dt
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+from zoneinfo import ZoneInfo
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "context"))
+from instance import framework  # noqa: E402
+
+UK = ZoneInfo("Europe/London")
+HOME = Path.home()
+OUT = HOME / ".cache/genv/compute-pace.json"
+USAGE_BIN = Path(__file__).resolve().parent / "compute-usage"
+GWAGES = Path(os.environ.get("GWAGES") or framework().parent / "g-wages")
+TRAILING_DAYS = 28
+PACE_WINDOWS = (7, 14, 28)  # usual-pace window: shortest with enough active days
+MIN_ACTIVE_DAYS = 4
+LOW_SAMPLE_H = 3.0  # fewer sampled work hours than this: no burn rate, no projection
+SAFE_LEFT_PCT = 5.0  # safe burn lands here at reset, i.e. about 0-5% left
+WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def codex_prompts(since, root=None):
+    """Timestamps of the operator's own Codex turns on this host.
+
+    Counts `task_started` events in top-level sessions only: originator codex-tui
+    with thread_source user. Subagent threads, `codex exec` runs and sessions
+    launched by Claude Code are excluded. Forked sessions replay old messages
+    but not task_started, so each turn is counted once.
+    """
+    root = Path(root) if root else HOME / ".codex/sessions"
+    out = []
+    for f in sorted(root.glob("*/*/*/*.jsonl")):
+        day = "-".join(f.parts[-4:-1])
+        if day < since:
+            continue
+        try:
+            top = None
+            with f.open(errors="replace") as stream:
+                for line in stream:
+                    if top is None and '"session_meta"' in line[:200]:
+                        meta = json.loads(line).get("payload") or {}
+                        top = meta.get("originator") == "codex-tui" and meta.get("thread_source") == "user"
+                        if not top:
+                            break
+                    elif top and '"task_started"' in line[:300]:
+                        j = json.loads(line)
+                        if (j.get("payload") or {}).get("type") == "task_started":
+                            out.append(j["timestamp"])
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def _load_module(name, path):
+    spec = importlib.util.spec_from_loader(name, importlib.machinery.SourceFileLoader(name, str(path)))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def intervals(turns, idle, tail):
+    """Union-timeline intervals (start, end) from ordered human-prompt times.
+
+    Mirrors ledger.sessions.slice_hours: a prompt is charged the gap to the next
+    prompt that day, capped at `idle`; the day's last prompt gets `tail`.
+    """
+    out = []
+    for i, t0 in enumerate(turns):
+        if i + 1 < len(turns) and turns[i + 1].astimezone(UK).date() == t0.astimezone(UK).date():
+            dur = min(max(turns[i + 1] - t0, dt.timedelta()), idle)
+        else:
+            dur = tail
+        out.append((t0, t0 + dur))
+    return out
+
+
+def overlap_hours(ivs, a, b):
+    total = 0.0
+    for s, e in ivs:
+        lo, hi = max(s, a), min(e, b)
+        if hi > lo:
+            total += (hi - lo).total_seconds()
+    return total / 3600
+
+
+def _midnight(day):
+    return dt.datetime(day.year, day.month, day.day, tzinfo=UK)
+
+
+def hours_profile(ivs, today, days=TRAILING_DAYS):
+    """Trailing complete days -> (daily totals, per-weekday mean, (weekday,hour) mean)."""
+    daily, profile, count = {}, {}, {}
+    for n in range(1, days + 1):
+        d = today - dt.timedelta(days=n)
+        daily[d] = 0.0
+        count[d.weekday()] = count.get(d.weekday(), 0) + 1
+    first = _midnight(today - dt.timedelta(days=days))
+    last = _midnight(today)
+    for s, e in ivs:
+        lo, hi = max(s, first), min(e, last)
+        cur = lo
+        while cur < hi:
+            local = cur.astimezone(UK)
+            nxt = min(hi, (local.replace(minute=0, second=0, microsecond=0) + dt.timedelta(hours=1)))
+            h = (nxt - cur).total_seconds() / 3600
+            daily[local.date()] += h
+            key = (local.weekday(), local.hour)
+            profile[key] = profile.get(key, 0.0) + h
+            cur = nxt
+    by_wd = {}
+    for d, h in daily.items():
+        by_wd[d.weekday()] = by_wd.get(d.weekday(), 0.0) + h
+    by_wd = {wd: v / count[wd] for wd, v in by_wd.items()}
+    profile = {k: v / count[k[0]] for k, v in profile.items()}
+    return daily, by_wd, profile
+
+
+def usual_pace(daily, today):
+    """(window days, mean work-h/day, active days) over the shortest trailing window
+    in PACE_WINDOWS with MIN_ACTIVE_DAYS of activity; the longest is the fallback."""
+    for days in PACE_WINDOWS:
+        window = [h for d, h in daily.items() if d >= today - dt.timedelta(days=days)]
+        active = sum(1 for h in window if h > 0)
+        if active >= MIN_ACTIVE_DAYS or days == PACE_WINDOWS[-1]:
+            return days, sum(window) / days, active
+
+
+def expected_hours(profile, a, b):
+    """Typical active hours in [a, b) given the (weekday, hour) mean profile."""
+    total, cur = 0.0, a
+    while cur < b:
+        local = cur.astimezone(UK)
+        nxt = min(b, local.replace(minute=0, second=0, microsecond=0) + dt.timedelta(hours=1))
+        frac = (nxt - cur).total_seconds() / 3600
+        total += frac * profile.get((local.weekday(), local.hour), 0.0)
+        cur = nxt
+    return total
+
+
+def exhaust_time(profile, a, b, work_hours):
+    """When `work_hours` of typical activity has accrued after `a`, if before `b`."""
+    acc, cur = 0.0, a
+    while cur < b:
+        local = cur.astimezone(UK)
+        nxt = min(b, local.replace(minute=0, second=0, microsecond=0) + dt.timedelta(hours=1))
+        frac = (nxt - cur).total_seconds() / 3600
+        rate = profile.get((local.weekday(), local.hour), 0.0)
+        if rate > 0 and acc + frac * rate >= work_hours:
+            return cur + dt.timedelta(hours=(work_hours - acc) / rate)
+        acc += frac * rate
+        cur = nxt
+    return None
+
+
+def _window_hours(row):
+    if row["metric"] == "five_hour":
+        return 5.0
+    if row["metric"] == "seven_day":
+        return 168.0
+    m = re.search(r"(\d+) min window", row.get("note") or "")
+    return int(m.group(1)) / 60 if m else 168.0
+
+
+def _label(provider, hours):
+    return f"{provider} {'%dd' % (hours // 24) if hours % 24 == 0 and hours >= 24 else '%gh' % hours}"
+
+
+def load_observations(path=None, now=None, lookback_h=48):
+    """Recorded quota rows from the compute-usage archive within the lookback."""
+    path = path or HOME / ".cache/genv/compute-usage.jsonl"
+    now = now or dt.datetime.now(dt.timezone.utc)
+    cutoff = now - dt.timedelta(hours=lookback_h)
+    out = []
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        try:
+            for r in json.loads(line).get("rows") or []:
+                if r.get("status") == "ok" and r.get("unit") == "percent" and r.get("fetched_at") and r.get("resets_at"):
+                    if dt.datetime.fromisoformat(r["fetched_at"]) >= cutoff:
+                        out.append(r)
+        except (ValueError, AttributeError, TypeError):
+            continue
+    return out
+
+
+def baseline(observations, row, reset, now, lookback_h=48):
+    """Earliest recorded observation of this quota, in this window, within the lookback."""
+    best = None
+    for o in observations or []:
+        if o.get("provider") != row["provider"] or o.get("metric") != row["metric"]:
+            continue
+        try:
+            t = dt.datetime.fromisoformat(o["fetched_at"])
+            same = abs((dt.datetime.fromisoformat(o["resets_at"]) - reset).total_seconds()) < 120
+        except (TypeError, ValueError):
+            continue
+        if same and t >= now - dt.timedelta(hours=lookback_h) and (best is None or t < best[0]):
+            best = (t, o["used"])
+    return best
+
+
+def build(rows, turns, now, hosts=None, missing_hosts=None, idle=None, tail=None, observations=None, sources=None):
+    """Pure pace calculation. `turns` are aware datetimes of human prompts.
+
+    `sources` names the prompt sources counted; an empty list means none were.
+    """
+    idle = idle or dt.timedelta(minutes=30)
+    tail = tail or dt.timedelta(minutes=10)
+    turns = sorted(turns)
+    ivs = intervals(turns, idle, tail)
+    now_uk = now.astimezone(UK)
+    today = now_uk.date()
+    daily, by_wd, profile = hours_profile(ivs, today)
+    today_h = overlap_hours(ivs, _midnight(today), now)
+    avg = sum(daily.values()) / len(daily)
+    pace_days, pace_avg, pace_active = usual_pace(daily, today)
+    scale = pace_avg / avg if avg > 0 else 1.0
+    profile = {k: v * scale for k, v in profile.items()}
+    quotas, week_so_far = [], None
+    for r in rows or []:
+        if (r.get("provider") not in ("claude", "codex") or r.get("status") != "ok"
+                or r.get("unit") != "percent" or not r.get("resets_at")
+                or r.get("remaining") is None):
+            continue
+        try:
+            reset = dt.datetime.fromisoformat(r["resets_at"])
+            fetched = dt.datetime.fromisoformat(r["fetched_at"])
+        except (TypeError, ValueError):
+            continue
+        win = _window_hours(r)
+        start = reset - dt.timedelta(hours=win)
+        observed_to = min(now, fetched)
+        base = baseline(observations, r, reset, now)
+        sampled = overlap_hours(ivs, base[0], observed_to) if base else 0.0
+        low = sampled < LOW_SAMPLE_H
+        burn = max(0.0, r["used"] - base[1]) / sampled if base and not low else None
+        future = expected_hours(profile, now, reset) if reset > now else 0.0
+        qid = _label(r["provider"], win)
+        proj = max(0.0, r["remaining"] - burn * future) if burn is not None else None
+        safe = max(0.0, r["remaining"] - SAFE_LEFT_PCT) / future if future > 0 else None
+        runs_out, out_hours = None, None
+        if burn and burn > 0 and r["remaining"] - burn * future <= 0 and reset > now:
+            out_hours = r["remaining"] / burn
+            when = exhaust_time(profile, now, reset, out_hours)
+            runs_out = when.isoformat() if when else None
+        if r["metric"] == "seven_day" and r["provider"] == "claude":
+            week_so_far = overlap_hours(ivs, start, now)
+        quotas.append({
+            "id": qid, "provider": r["provider"], "metric": r["metric"],
+            "window_hours": win, "remaining_pct": r["remaining"], "used_pct": r["used"],
+            "resets_at": reset.isoformat(), "seconds_to_reset": int((reset - now).total_seconds()),
+            "active_hours_in_window": round(overlap_hours(ivs, start, now), 2),
+            "sampled_work_hours": round(sampled, 2),
+            "sampled_since": base[0].isoformat() if base else None,
+            "low_sample": low,
+            "burn_pct_per_work_hour": None if burn is None else round(burn, 3),
+            "safe_burn_pct_per_work_hour": None if safe is None else round(safe, 3),
+            "runs_out_at": runs_out, "work_hours_to_run_out": None if out_hours is None else round(out_hours, 1),
+            "work_hours_left": round(future, 2),
+            "projected_remaining_pct": None if proj is None else round(proj, 1),
+            "usage_fetched_at": fetched.isoformat(),
+        })
+    openrouter = None
+    for r in rows or []:
+        if r.get("provider") == "openrouter" and r.get("metric") == "credits" and r.get("status") == "ok":
+            openrouter = {"remaining_usd": r.get("remaining"), "limit_usd": r.get("limit"),
+                          "used_usd": r.get("used"), "usage_fetched_at": r.get("fetched_at")}
+    return {
+        "computed_at": now.astimezone(dt.timezone.utc).isoformat(),
+        "hours": {
+            "sources": ["claude"] if sources is None else sources, "hosts": hosts or [], "missing_hosts": missing_hosts or [],
+            "today": round(today_h, 2), "claude_week_so_far": None if week_so_far is None else round(week_so_far, 2),
+            "avg_daily_28d": round(avg, 2), "trailing_days": TRAILING_DAYS,
+            "usual_pace_days": pace_days, "usual_pace_daily": round(pace_avg, 2),
+            "usual_pace_active_days": pace_active,
+            "days_with_activity": sum(1 for h in daily.values() if h > 0),
+            "avg_by_weekday": {WEEKDAYS[k]: round(v, 2) for k, v in sorted(by_wd.items())},
+            "avg_today_weekday": round(by_wd.get(today.weekday(), 0.0), 2),
+        },
+        "quotas": quotas,
+        "openrouter": openrouter,
+        "method": "work hours = union of the operator's Claude and Codex prompts across hosts, gaps capped at "
+                  "30 min (session-gap slice); every quota is burned per total work hour; burn = used% gained "
+                  "between the earliest recorded observation in the last 48h of the same window and now, over "
+                  "work hours in that span; under 3 sampled hours there is no rate and no projection; "
+                  "projection = remaining - burn x typical work hours to reset (28-day weekday-hour profile "
+                  "scaled to the usual pace: trailing 7 days, or 14/28 when fewer than 4 days were active); "
+                  "safe burn = (remaining - 5) / those work hours, so following it leaves about 0-5% at reset",
+    }
+
+
+def collect_turns(now, days=TRAILING_DAYS + 2):
+    """Prompt times from every manifest host via the session collector; None without one."""
+    sys.path.insert(0, str(GWAGES))
+    try:
+        from ledger import sessions  # noqa: E402
+    except ImportError:
+        return None, [], [], None, None
+    since = (now.astimezone(UK) - dt.timedelta(days=days)).date().isoformat()
+    turns, errors = sessions.collect(since)
+    hosts = sorted({t[4] for t in turns})
+    missing = [e.split(":")[0] for e in errors]
+    stamps = [dt.datetime.fromisoformat(t[0]) for t in turns]
+    for h in sessions._hosts():
+        try:
+            if h["local"]:
+                found = codex_prompts(since)
+            else:
+                out = subprocess.run(
+                    ["ssh", "-o", "ConnectTimeout=10", h["ssh"], "python3 - --codex-prompts " + since],
+                    input=Path(__file__).read_text(), capture_output=True, text=True, timeout=60, check=True).stdout
+                found = json.loads(out.strip().splitlines()[-1])
+        except Exception:
+            continue
+        stamps += [dt.datetime.fromisoformat(x.replace("Z", "+00:00")) for x in found]
+    return stamps, hosts, missing, sessions.IDLE, sessions.TAIL
+
+
+def refresh(path=OUT, now=None, usage=None, collector=collect_turns):
+    now = now or dt.datetime.now(dt.timezone.utc)
+    rows = usage if usage is not None else _load_module("compute_usage", USAGE_BIN).load()
+    turns, hosts, missing, idle, tail = collector(now)
+    sources = [] if turns is None else ["claude", "codex"]
+    data = build(rows, turns or [], now, hosts, missing, idle, tail, load_observations(now=now), sources)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, separators=(",", ":")))
+    os.replace(tmp, path)
+    return data
+
+
+def load(path=OUT, now=None):
+    """Cached pace with age_seconds and live seconds_to_reset, or None."""
+    now = time.time() if now is None else now
+    try:
+        data = json.loads(path.read_text())
+        age = max(0, int(now - dt.datetime.fromisoformat(data["computed_at"]).timestamp()))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    data["age_seconds"] = age
+    for q in data.get("quotas", []):
+        try:
+            q["seconds_to_reset"] = int(dt.datetime.fromisoformat(q["resets_at"]).timestamp() - now)
+        except (KeyError, TypeError, ValueError):
+            pass
+    return data
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--codex-prompts", metavar="SINCE", help="print this host's Codex prompt timestamps (used over ssh)")
+    p.add_argument("--refresh", action="store_true", help="recompute and write the cache (timer mode)")
+    args = p.parse_args(argv)
+    if args.codex_prompts:
+        print(json.dumps(codex_prompts(args.codex_prompts)))
+        return 0
+    if args.refresh or load() is None:
+        refresh()
+    print(json.dumps(load(), indent=1))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

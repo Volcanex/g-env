@@ -1,0 +1,394 @@
+#!/usr/bin/env python3
+"""Compute spend: Claude and Codex quota use by model and worker, as data.
+
+Writes ~/.cache/genv/compute-spend.json for gcommand's /compute page. --json
+prints the data instead; --local collects only this host. G_SPEND_REMOTES names
+alias=user@host:path entries, separated by commas or whitespace; the default is
+user@hostname:genv/bin/compute-spend for every other host with a workspace in the
+instance manifest. G_SPEND_HOST defaults to h.
+
+Today and the last eight daily buckets use Europe/London. Each provider's week
+starts seven days before its compute-pace.json reset, or seven days ago when
+absent. --pace FILE|- overrides that input, including over SSH so hosts agree.
+
+Units are Opus-output-token equivalents: weighted tokens times a model factor,
+divided by the Opus output weight. This is an estimate of relative quota cost,
+not a billed number. Codex input includes cached input; cache_read reports that
+subset and is weighted like Claude's (weighting it at full price made a cached
+Astra session look 8x its size). Job logs cannot separate cached input, so
+their combined input is estimated at the input weight, an overestimate.
+
+Claude messages are deduplicated by message.id, keeping the last usage. Codex
+interactive rollouts use increments of cumulative token_count usage, with the
+model from turn_context; codex_exec rollouts are excluded because jobs are in
+g-agent-run.jsonl. Native interactive subagents share the interactive bucket.
+"""
+import argparse
+import copy
+import datetime as dt
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+from zoneinfo import ZoneInfo
+
+# Agents renamed to model, effort and role (2026-10-05); older transcripts keep the old names.
+RENAMED = {"g-worker-opus": "opus-medium-worker", "g-worker-deep": "sonnet-high-worker", "g-explore-fast": "sonnet-medium-explorer", "g-research-fast": "sonnet-medium-researcher", "g-worker-fast": "sonnet-medium-worker", "g-worker-plus": "opus-low-worker", "g-superworker": "opus-medium-worker", "g-suborchestrator": "opus-medium-suborchestrator", "g-orchestrator": "opus-high-orchestrator"}
+
+WEIGHTS = {"input": 1, "cache_write": 1.25, "cache_read": 0.1, "output": 5}
+MODEL_FACTORS = {"claude": {"opus": 1, "sonnet": 0.6, "haiku": 0.2, "fable": 2},
+                 "codex": {"sol": 1, "luna": 0.05, "astra": 5}}
+UK = ZoneInfo("Europe/London")
+UTC = dt.timezone.utc
+FIELDS = (*WEIGHTS, "units", "turns")
+RECENT_FIELDS = ("ts", "role", "provider", "status", "reason", "effort", "web", "secs", "label")
+
+
+def timestamp(value):
+    try:
+        stamp = dt.datetime.fromisoformat(value)
+        return stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp.astimezone(UTC)
+    except (TypeError, ValueError):
+        return None
+
+
+def load_pace(path=None):
+    try:
+        if str(path) == "-":
+            data = json.load(sys.stdin)
+        else:
+            data = json.loads((Path(path) if path else Path.home() / ".cache/genv/compute-pace.json").read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def week_starts(pace, now):
+    starts = {provider: now - dt.timedelta(days=7) for provider in MODEL_FACTORS}
+    for quota in pace.get("quotas") or []:
+        for provider in starts:
+            if quota.get("id") == f"{provider} 7d":
+                reset = timestamp(quota.get("resets_at"))
+                if reset:
+                    starts[provider] = reset - dt.timedelta(days=7)
+    return starts
+
+
+def tokens(provider, model, usage=None, turns=1):
+    usage = usage or {}
+    out = {}
+    for field in WEIGHTS:
+        try:
+            out[field] = max(0, int(usage.get(field, 0) or 0))
+        except (TypeError, ValueError):
+            out[field] = 0
+    factor = next((value for name, value in MODEL_FACTORS[provider].items() if name in model.lower()), 1)
+    if provider == "codex":  # Codex input already contains cache_read
+        fresh = max(0, out["input"] - out["cache_read"])
+        weighted = (fresh * WEIGHTS["input"] + out["cache_read"] * WEIGHTS["cache_read"]
+                    + out["output"] * WEIGHTS["output"])
+    else:
+        weighted = sum(out[field] * weight for field, weight in WEIGHTS.items())
+    out.update(units=float(weighted * factor / WEIGHTS["output"]), turns=turns)
+    return out
+
+
+def add_tokens(target, source):
+    for field in FIELDS:
+        target[field] += source[field]
+    if "models" in source:
+        models = target.setdefault("models", {})
+        for model, units in source["models"].items():
+            models[model] = models.get(model, 0.0) + units
+
+
+def add_group(groups, key, amount):
+    if key not in groups:
+        groups[key] = {field: 0.0 if field == "units" else 0 for field in FIELDS}
+    add_tokens(groups[key], amount)
+
+
+def bucket():
+    return {"by_model": {}, "by_worker": {}}
+
+
+def record(data, provider, stamp, model, worker, amount, metadata=False):
+    if stamp is None or stamp > timestamp(data["computed_at"]):
+        return
+    section = data[provider]
+    today = timestamp(data["computed_at"]).astimezone(UK).date()
+    worker_amount = {**amount, "models": {} if metadata else {model: amount["units"]}}
+    for name, inside in (("today", stamp.astimezone(UK).date() == today),
+                         ("week", stamp >= timestamp(section["week_start"]))):
+        if inside:
+            if not metadata:
+                add_group(section[name]["by_model"], model, amount)
+            add_group(section[name]["by_worker"], worker, worker_amount)
+    if not metadata:
+        day = stamp.astimezone(UK).date().isoformat()
+        for daily in section["daily"]:
+            if daily["date"] == day:
+                add_group(daily["by_model"], model, amount)
+                break
+
+
+def recent_files(paths, since):
+    for path in sorted(paths):
+        try:
+            if path.stat().st_mtime >= since.timestamp():
+                yield path
+        except OSError:
+            continue
+
+
+def json_lines(path, needles=()):
+    try:
+        with path.open(errors="replace") as stream:
+            for line in stream:
+                if needles and not any(needle in line for needle in needles):
+                    continue
+                try:
+                    row = json.loads(line)
+                    if isinstance(row, dict):
+                        yield row
+                except ValueError:
+                    continue
+    except OSError:
+        return
+
+
+def claude_transcripts(data, home, since):
+    root = home / ".claude/projects"
+    paths = list(root.glob("*/*.jsonl")) + list(root.glob("*/*/subagents/agent-*.jsonl"))
+    messages = {}
+    for path in recent_files(paths, since):
+        worker = "main"
+        if path.parent.name == "subagents":
+            worker = "subagent"
+            try:
+                worker = json.loads(path.with_suffix(".meta.json").read_text()).get("agentType") or worker
+                worker = RENAMED.get(worker, worker)
+            except (OSError, ValueError, AttributeError):
+                pass
+        for row in json_lines(path, ('"assistant"',)):
+            if row.get("type") != "assistant":
+                continue
+            message = row.get("message") or {}
+            model = message.get("model")
+            if not message.get("id") or not model or model == "<synthetic>":
+                continue
+            usage = message.get("usage") or {}
+            messages[message["id"]] = (timestamp(row.get("timestamp")), model.removeprefix("claude:"), worker,
+                                        {"input": usage.get("input_tokens", 0),
+                                         "cache_write": usage.get("cache_creation_input_tokens", 0),
+                                         "cache_read": usage.get("cache_read_input_tokens", 0),
+                                         "output": usage.get("output_tokens", 0)})
+    for stamp, model, worker, usage in messages.values():
+        record(data, "claude", stamp, model, worker, tokens("claude", model, usage))
+
+
+def recent_union(rows):
+    unique = {json.dumps(row, sort_keys=True): row for row in rows}
+    return sorted(unique.values(), key=lambda row: timestamp(row["ts"]), reverse=True)[:40]
+
+
+def job_log(data, home, host):
+    codex = data["codex"]
+    for row in json_lines(home / ".cache/genv/g-agent-run.jsonl"):
+        stamp = timestamp(row.get("ts"))
+        if stamp is None or stamp > timestamp(data["computed_at"]):
+            continue
+        role, spec = row.get("role"), row.get("provider") or ""
+        if not role:
+            continue
+        provider, _, model = spec.partition(":")
+        amount = tokens(provider, model, row.get("usage")) if provider in MODEL_FACTORS else tokens("codex", model)
+        if provider == "claude":
+            record(data, "claude", stamp, model, f"sol-fallback:{role}", amount)
+            record(data, "codex", stamp, model, role, tokens("codex", model), metadata=True)
+        elif provider == "codex":
+            record(data, "codex", stamp, model, role, amount)
+        if row.get("status") == "ok":
+            previous = timestamp(codex["last_by_role"].get(role))
+            if previous is None or stamp > previous:
+                codex["last_by_role"][role] = row["ts"]
+        recent = {field: row.get(field) for field in RECENT_FIELDS}
+        recent.update(host=host, units=amount["units"])
+        codex["recent"] = recent_union([*codex["recent"], recent])
+
+
+def codex_sessions(data, home, since):
+    fields = {"input": "input_tokens", "cache_write": "cache_write_input_tokens",
+              "cache_read": "cached_input_tokens", "output": "output_tokens"}
+    for path in recent_files((home / ".codex/sessions").rglob("*.jsonl"), since):
+        interactive, model, previous, unclear = False, None, {}, False
+        for row in json_lines(path, ('"session_meta"', '"turn_context"', '"token_count"')):
+            payload = row.get("payload") or {}
+            if row.get("type") == "session_meta":
+                source, originator = payload.get("source"), payload.get("originator")
+                interactive = (source != "exec" and originator != "codex_exec"
+                               and (source in ("cli", "vscode") or originator == "codex-tui"))
+                if not interactive:
+                    break
+            elif interactive and row.get("type") == "turn_context":
+                model = payload.get("model") or model
+            elif interactive and row.get("type") == "event_msg" and payload.get("type") == "token_count":
+                info = payload.get("info") or {}
+                total = info.get("total_token_usage")
+                if total is None:  # rate-limit-only events have no usage
+                    if info:
+                        unclear = True
+                    continue
+                if not isinstance(total, dict) or not all(key in total for key in ("input_tokens", "output_tokens")):
+                    unclear = True
+                    continue
+                current = tokens("codex", "", {key: total.get(field, 0) for key, field in fields.items()}, turns=0)
+                if previous and all(current[key] == previous[key] for key in WEIGHTS):
+                    continue
+                usage = {key: max(0, current[key] - previous.get(key, 0)) for key in WEIGHTS}
+                previous = current
+                if not model:
+                    unclear = True
+                    continue
+                model = model.removeprefix("codex:")
+                record(data, "codex", timestamp(row.get("timestamp")), model, "interactive", tokens("codex", model, usage))
+        if unclear:
+            print(f"compute-spend: unclear Codex token format in {path.name}; skipped those events", file=sys.stderr)
+
+
+def collect(now=None, pace=None, host=None):
+    now = now or dt.datetime.now(UTC)
+    pace = load_pace() if pace is None else pace
+    host = host or os.environ.get("G_SPEND_HOST", "h")
+    starts = week_starts(pace, now)
+    today = now.astimezone(UK).date()
+    days = [today - dt.timedelta(days=n) for n in range(7, -1, -1)]
+    daily_start = dt.datetime.combine(days[0], dt.time(), UK).astimezone(UTC)
+    data = {"computed_at": now.isoformat(), "hosts": [host], "errors": {}}
+    for provider in MODEL_FACTORS:
+        data[provider] = {"week_start": starts[provider].isoformat(), "today": bucket(), "week": bucket(),
+                          "daily": [{"date": day.isoformat(), "by_model": {}} for day in days]}
+    data["codex"].update(last_by_role={}, recent=[])
+    home = Path.home()
+    claude_transcripts(data, home, min(daily_start, starts["claude"]))
+    job_log(data, home, host)
+    codex_sessions(data, home, min(daily_start, starts["codex"]))
+    return data
+
+
+def merge(payloads):
+    out = copy.deepcopy(payloads[0])
+    for data in payloads[1:]:
+        out["hosts"] = list(dict.fromkeys([*out["hosts"], *data["hosts"]]))
+        out["errors"].update(data["errors"])
+        for provider in MODEL_FACTORS:
+            target, source = out[provider], data[provider]
+            for window in ("today", "week"):
+                for group in ("by_model", "by_worker"):
+                    for key, amount in source[window][group].items():
+                        add_group(target[window][group], key, amount)
+            daily = {row["date"]: row for row in target["daily"]}
+            for row in source["daily"]:
+                day = daily.setdefault(row["date"], {"date": row["date"], "by_model": {}})
+                for model, amount in row["by_model"].items():
+                    add_group(day["by_model"], model, amount)
+            target["daily"] = [daily[day] for day in sorted(daily)[-8:]]
+        for role, stamp in data["codex"]["last_by_role"].items():
+            previous = timestamp(out["codex"]["last_by_role"].get(role))
+            if previous is None or timestamp(stamp) > previous:
+                out["codex"]["last_by_role"][role] = stamp
+        out["codex"]["recent"] = recent_union([*out["codex"]["recent"], *data["codex"]["recent"]])
+    return out
+
+
+def default_remotes(host):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "context"))
+    from instance import instance
+    try:
+        hosts = json.loads(instance("manifest").read_text())["hosts"]
+        return " ".join(f"{h['id']}={h['user']}@{h['hostname']}:genv/bin/compute-spend"
+                        for h in hosts if h.get("workspace") is not None and h["id"] != host)
+    except (AttributeError, KeyError, OSError, TypeError, ValueError):
+        return ""
+
+
+def collect_remotes(data, pace, remotes):
+    shared_pace = copy.deepcopy(pace)
+    quotas = shared_pace.setdefault("quotas", [])
+    for provider in MODEL_FACTORS:
+        if not any(q.get("id") == f"{provider} 7d" and timestamp(q.get("resets_at")) for q in quotas):
+            quotas.append({"id": f"{provider} 7d", "provider": provider,
+                           "resets_at": (timestamp(data[provider]["week_start"]) + dt.timedelta(days=7)).isoformat()})
+    for spec in re.split(r"[\s,]+", remotes.strip()):
+        if not spec:
+            continue
+        alias = spec.partition("=")[0]
+        try:
+            alias, address = spec.split("=", 1)
+            target, path = address.rsplit(":", 1)
+            if not alias or not target or not path:
+                raise ValueError("expected alias=user@host:path")
+            if alias not in data["hosts"]:
+                data["hosts"].append(alias)
+            result = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", target,
+                                     "python3", shlex.quote(path), "--local", "--json", "--pace", "-"],
+                                    input=json.dumps(shared_pace), text=True, capture_output=True, timeout=120, check=True)
+            remote = json.loads(result.stdout)
+            remote["hosts"] = [alias]
+            for row in remote["codex"]["recent"]:
+                row["host"] = alias
+            data = merge([data, remote])
+        except subprocess.CalledProcessError as exc:
+            data["errors"][alias] = f"ssh: {(exc.stderr or str(exc)).strip()}"
+        except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError, AttributeError) as exc:
+            data["errors"][alias] = f"ssh: {exc}"
+    return data
+
+
+def write_cache(data):
+    path = Path.home() / ".cache/genv/compute-spend.json"
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix="compute-spend-", suffix=".tmp", delete=False) as stream:
+            tmp = Path(stream.name)
+            json.dump(data, stream, separators=(",", ":"))
+            stream.write("\n")
+        os.replace(tmp, path)
+    finally:
+        if tmp:
+            tmp.unlink(missing_ok=True)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="print JSON instead of writing the cache")
+    parser.add_argument("--local", action="store_true", help="collect only this host, without SSH")
+    parser.add_argument("--pace", metavar="FILE|-", help="quota week input (default: compute-pace.json)")
+    args = parser.parse_args(argv)
+    pace = load_pace(args.pace)
+    data = collect(pace=pace)
+    if not args.local:
+        remotes = os.environ.get("G_SPEND_REMOTES")
+        data = collect_remotes(data, pace, default_remotes(data["hosts"][0]) if remotes is None else remotes)
+    if args.json:
+        print(json.dumps(data, separators=(",", ":")))
+    else:
+        write_cache(data)
+        totals = [f"{provider} {sum(row['units'] for row in data[provider]['today']['by_model'].values()):.0f} units"
+                  for provider in MODEL_FACTORS]
+        print(f"compute-spend: {','.join(data['hosts'])}; today {', '.join(totals)}; {len(data['errors'])} remote errors")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        result = main()
+        sys.stdout.flush()
+        raise SystemExit(result)
+    except BrokenPipeError:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())

@@ -1,0 +1,13 @@
+#!/usr/bin/env python3.12
+import os
+import sys
+
+root = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(root, "cli"))
+
+from main import main
+
+try:
+    sys.exit(main(sys.argv[1:]))
+except KeyboardInterrupt:
+    sys.exit(130)

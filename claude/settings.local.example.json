@@ -1,0 +1,36 @@
+{
+  "_comment": "Copy to ~/.claude/settings.local.json; it is not tracked in genv. Add machine-specific overrides here.",
+
+  "_mac_example": {
+    "permissions": {
+      "defaultMode": "auto",
+      "skipAutoPermissionPrompt": true
+    },
+    "mcpServers": {
+      "brain": {
+        "type": "sse",
+        "url": "https://brain.example.com/mcp",
+        "headers": {
+          "CF-Access-Client-Id": "YOUR_CF_CLIENT_ID",
+          "CF-Access-Client-Secret": "YOUR_CF_CLIENT_SECRET"
+        }
+      },
+      "playwright": {
+        "command": "npx",
+        "args": ["@playwright/mcp@latest"]
+      }
+    }
+  },
+
+  "_linux_server_example": {
+    "permissions": {
+      "defaultMode": "bypassPermissions"
+    },
+    "model": "opus",
+    "env": {
+      "IS_SANDBOX": "1",
+      "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+    },
+    "agentPushNotifEnabled": true
+  }
+}

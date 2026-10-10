@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# Put the clipboard image where the workspace's shell can see it, and leave the
+# path on the clipboard to paste.
+set -euo pipefail
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+DIR_REL=".cache/paste-img"
+KEEP_DAYS=7
+LOG=/tmp/ae-paste.log
+
+say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >>"$LOG"; }
+
+notify() {
+  osascript -e "display notification \"$2\" with title \"$1\"" >/dev/null 2>&1 || true
+  say "$1: $2"
+}
+
+fail() {
+  notify "paste failed" "$1"
+  echo "$1" >&2
+  exit 1
+}
+
+name="$(date +%Y%m%d-%H%M%S)-$(openssl rand -hex 3).png"
+tmpdir="$(mktemp -d -t ae-paste)"
+tmp="$tmpdir/img.png"
+trap 'rm -rf "$tmpdir"' EXIT
+
+# --- clipboard -> tmp png -------------------------------------------------
+kind="$(osascript - "$tmp" <<'APPLESCRIPT'
+on writeData(d, p)
+	set fh to open for access (POSIX file p) with write permission
+	try
+		set eof fh to 0
+		write d to fh
+	end try
+	close access fh
+end writeData
+
+on run argv
+	set p to item 1 of argv
+	try
+		writeData(the clipboard as «class PNGf», p)
+		return "png"
+	end try
+	try
+		writeData(the clipboard as «class TIFF», p)
+		return "tiff"
+	end try
+	-- text coerces to a file url happily, so only trust a real one
+	if (clipboard info) as string contains "furl" then
+		try
+			return "file:" & POSIX path of (the clipboard as «class furl»)
+		end try
+	end if
+	return "none"
+end run
+APPLESCRIPT
+)"
+
+case "$kind" in
+  none) fail "no image on the clipboard (screenshot to clipboard is ctrl-cmd-shift-4)" ;;
+  tiff) sips -s format png "$tmp" --out "$tmp" >/dev/null 2>&1 || fail "could not convert clipboard TIFF" ;;
+  file:*)
+    src="${kind#file:}"
+    [ -f "$src" ] || fail "clipboard holds a file that is not readable"
+    cp "$src" "$tmp"
+    # a copied file keeps its own extension; an image on the clipboard is a png
+    if [ "${src##*.}" != "$src" ]; then
+      ext="$(printf '%s' "${src##*.}" | tr '[:upper:]' '[:lower:]')"
+      name="${name%.png}.$ext"
+    fi
+    ;;
+esac
+[ -s "$tmp" ] || fail "clipboard image came out empty"
+
+# --- which host is this workspace on? ------------------------------------
+ws="$(cat "$HOME/.ae-current" 2>/dev/null || true)"
+host=""
+if [ -n "$ws" ]; then
+  host="$(cat "$HOME/.ae-workspace-$ws" 2>/dev/null || true)"
+  if [ -z "$host" ]; then
+    host="$(python3 -c "
+import json,sys
+m=json.load(open('$HOME/Desktop/gcore/manifest.json'))
+w=next((w for w in m['workspaces'] if str(w['number'])=='$ws'),None)
+print((w or {}).get('host') or '')
+" 2>/dev/null || true)"
+  fi
+fi
+
+# --- land it -------------------------------------------------------------
+if [ -z "$host" ]; then
+  dir="$HOME/$DIR_REL"
+  mkdir -p "$dir"
+  cp "$tmp" "$dir/$name"
+  find "$dir" -maxdepth 1 -name '*.png' -mtime "+$KEEP_DAYS" -delete 2>/dev/null || true
+  dest="$dir/$name"
+  where="local (ws ${ws:-?})"
+else
+  dest="$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" "
+d=\$HOME/$DIR_REL
+mkdir -p \"\$d\" || exit 1
+cat > \"\$d/$name.part\" || exit 1
+mv \"\$d/$name.part\" \"\$d/$name\" || exit 1
+find \"\$d\" -maxdepth 1 -type f -mtime +$KEEP_DAYS -delete 2>/dev/null
+printf '%s\n' \"\$d/$name\"
+" <"$tmp")" || fail "could not reach $host"
+  [ -n "$dest" ] || fail "$host accepted nothing"
+  where="$host (ws ${ws:-?})"
+fi
+
+printf '%s' "$dest" | pbcopy
+notify "→ $where" "$dest"

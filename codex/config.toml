@@ -1,0 +1,13 @@
+# Generic defaults, equal to what codex/configure.py fills into any host's config.
+# Never linked: on macOS bootstrap links an instance's env/codex/config.toml.
+project_doc_fallback_filenames = ["CLAUDE.md"]
+web_search = "live"
+
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 4
+default_subagent_model = "gpt-6-luna"
+default_subagent_reasoning_effort = "medium"
+
+[tui]
+status_line = ["context-used", "model-with-reasoning", "project-name", "git-branch", "five-hour-limit", "weekly-limit", "thread-title"]

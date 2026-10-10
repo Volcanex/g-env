@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# List and manage persistent workspace tmux sessions (ws*-*) across all hosts.
+# Usage:
+#   sessions              interactive: list, then prompt for a number to kill
+#   sessions list         just list, no prompt
+#   sessions kill <host> <name>   kill one session directly
+
+set -euo pipefail
+
+hosts=$(python3 -c "
+import json
+d = json.load(open('$HOME/Desktop/gcore/manifest.json'))
+hosts = sorted({w['host'] for w in d['workspaces'] if w.get('host')})
+print(' '.join(hosts))
+")
+
+ws_name() {
+  python3 -c "
+import json
+try:
+  d = json.load(open('$HOME/Desktop/gcore/manifest.json'))
+  ws = '$1'.split('-')[0].replace('ws','')
+  w = next(w for w in d['workspaces'] if str(w['number'])==ws)
+  print(w.get('name', ws))
+except: print('$1')
+"
+}
+
+fetch() {
+  # rows: host name attached
+  for host in $hosts; do
+    ssh -o ConnectTimeout=5 -q "$host" \
+      "tmux list-sessions -F '#{session_name} #{session_attached}' 2>/dev/null" 2>/dev/null \
+      | grep '^ws' | while read -r name attached; do
+          echo "$host $name $attached"
+        done
+  done
+}
+
+list() {
+  rows=$(fetch)
+  if [[ -z "$rows" ]]; then
+    echo "no ws* sessions running"
+    return 0
+  fi
+  i=0
+  printf "%-4s %-6s %-16s %-14s %s\n" "#" "host" "session" "workspace" "attached"
+  while read -r host name attached; do
+    i=$((i + 1))
+    ws_label=$(ws_name "$name")
+    state="no"
+    [[ "$attached" == "1" ]] && state="yes"
+    printf "%-4s %-6s %-16s %-14s %s\n" "$i" "$host" "$name" "$ws_label" "$state"
+  done <<< "$rows"
+}
+
+kill_session() {
+  local host="$1" name="$2"
+  ssh -q "$host" "tmux kill-session -t '$name'" \
+    && echo "killed ${name} on ${host}" \
+    || echo "failed to kill ${name} on ${host} (already gone?)" >&2
+}
+
+case "${1:-}" in
+  kill)
+    [[ $# -eq 3 ]] || { echo "usage: sessions kill <host> <name>" >&2; exit 1; }
+    kill_session "$2" "$3"
+    ;;
+  list)
+    list
+    ;;
+  "")
+    rows=$(fetch)
+    if [[ -z "$rows" ]]; then
+      echo "no ws* sessions running"
+      exit 0
+    fi
+    list
+    echo
+    read -r -p "kill which # (blank to quit)? " choice
+    [[ -z "$choice" ]] && exit 0
+    picked=$(echo "$rows" | sed -n "${choice}p")
+    [[ -z "$picked" ]] && { echo "invalid choice" >&2; exit 1; }
+    read -r host name _ <<< "$picked"
+    kill_session "$host" "$name"
+    ;;
+  *)
+    echo "usage: sessions [list|kill <host> <name>]" >&2
+    exit 1
+    ;;
+esac

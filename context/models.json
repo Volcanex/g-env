@@ -1,0 +1,386 @@
+{
+  "as_of": "2026-10-04",
+  "sources": [
+    {
+      "id": "AA",
+      "name": "Artificial Analysis Intelligence Index v4.3.2 (2026-09-30)",
+      "url": "https://artificialanalysis.ai/"
+    },
+    {
+      "id": "TB4",
+      "name": "Terminal-Bench 4.0 as measured by Artificial Analysis",
+      "url": "https://www.officechai.com/ai/claude-sonnet-5-5-scores-56-on-artificial-analysis-intelligence-index-3-points-ahead-of-gpt-6-astra/"
+    },
+    {
+      "id": "DA",
+      "name": "Design Arena overall Elo, blind human votes on one-shot design tournaments across website, UI component, game, 3D, SVG and app arenas (2026-10-05)",
+      "url": "https://www.designarena.ai/models"
+    }
+  ],
+  "models": [
+    {
+      "id": "opus-5.5",
+      "vendor": "anthropic",
+      "access": "claude-sub",
+      "released": null,
+      "scores": {
+        "AA": 58,
+        "TB4": 59.6,
+        "DA": 1480
+      },
+      "cost": "1x",
+      "role": "orchestrator",
+      "sources": {
+        "AA": "https://artificialanalysis.ai/models/claude-opus-5-5",
+        "TB4": "https://www.officechai.com/ai/claude-sonnet-5-5-scores-56-on-artificial-analysis-intelligence-index-3-points-ahead-of-gpt-6-astra/",
+        "cost": "https://platform.claude.com/docs/en/about-claude/pricing",
+        "DA": "https://www.designarena.ai/models"
+      }
+    },
+    {
+      "id": "sonnet-5.5",
+      "vendor": "anthropic",
+      "access": "claude-sub",
+      "released": null,
+      "scores": {
+        "AA": 56,
+        "TB4": 63.6,
+        "DA": 1400
+      },
+      "cost": "0.5x",
+      "role": "precision worker",
+      "sources": {
+        "AA": "https://artificialanalysis.ai/models/claude-sonnet-5-5",
+        "TB4": "https://www.officechai.com/ai/claude-sonnet-5-5-scores-56-on-artificial-analysis-intelligence-index-3-points-ahead-of-gpt-6-astra/",
+        "cost": "https://platform.claude.com/docs/en/about-claude/pricing",
+        "DA": "https://www.designarena.ai/models"
+      }
+    },
+    {
+      "id": "fable-5.1",
+      "vendor": "anthropic",
+      "access": "claude-sub",
+      "released": null,
+      "scores": {
+        "AA": 53,
+        "DA": 1364
+      },
+      "cost": "$10/$50 API, 50% weekly cap",
+      "role": "hardest",
+      "note": "5.5 soon",
+      "sources": {
+        "AA": "https://artificialanalysis.ai/models/claude-fable-5-1",
+        "cost": "https://platform.claude.com/docs/en/about-claude/pricing",
+        "DA": "https://www.designarena.ai/models/claude-fable-5-1"
+      }
+    },
+    {
+      "id": "haiku-4.5",
+      "vendor": "anthropic",
+      "access": "claude-sub",
+      "released": null,
+      "scores": {},
+      "cost": "",
+      "role": "statusline only",
+      "note": "5.5 soon"
+    },
+    {
+      "id": "gpt-6.1-sol",
+      "vendor": "openai",
+      "access": "codex-sub",
+      "released": null,
+      "scores": {
+        "AA": 48,
+        "DA": 1236
+      },
+      "cost": "~Sonnet price",
+      "role": "default worker",
+      "sources": {
+        "AA": "https://artificialanalysis.ai/models/gpt-6-1-sol-medium",
+        "cost": "https://developers.openai.com/api/docs/pricing",
+        "DA": "https://www.designarena.ai/models"
+      },
+      "note": "at medium; high 50, max 52"
+    },
+    {
+      "id": "gpt-6-astra",
+      "vendor": "openai",
+      "access": "codex-sub",
+      "released": null,
+      "scores": {
+        "AA": 53,
+        "DA": 1405
+      },
+      "cost": "5x Sol",
+      "role": "occasional reviewer",
+      "sources": {
+        "AA": "https://artificialanalysis.ai/models/gpt-6-astra",
+        "cost": "https://developers.openai.com/api/docs/pricing",
+        "DA": "https://www.designarena.ai/models/gpt-6-astra"
+      }
+    },
+    {
+      "id": "gpt-6-luna",
+      "vendor": "openai",
+      "access": "codex-sub",
+      "released": null,
+      "scores": {
+        "AA": 38,
+        "DA": 1303
+      },
+      "cost": "1/20 Sol",
+      "role": "bulk gather/transform",
+      "sources": {
+        "cost": "https://developers.openai.com/api/docs/pricing",
+        "AA": "https://artificialanalysis.ai/models/gpt-6-luna",
+        "DA": "https://www.designarena.ai/models"
+      }
+    }
+  ],
+  "effort_ladder": [
+    {
+      "model": "sonnet-5.5",
+      "effort": "low",
+      "score": 36,
+      "cost_usd": 0.42,
+      "ttft_s": 1,
+      "benchmark": "AA Intelligence Index v4.3.2",
+      "source": "https://artificialanalysis.ai/models/claude-sonnet-5-5-low"
+    },
+    {
+      "model": "opus-5.5",
+      "effort": "low",
+      "score": 42,
+      "cost_usd": 0.55,
+      "ttft_s": 5,
+      "benchmark": "AA Intelligence Index v4.3.2",
+      "source": "https://artificialanalysis.ai/models/claude-opus-5-5-low"
+    },
+    {
+      "model": "sonnet-5.5",
+      "effort": "medium",
+      "score": 41,
+      "cost_usd": 0.59,
+      "ttft_s": 1,
+      "benchmark": "AA Intelligence Index v4.3.2",
+      "source": "https://artificialanalysis.ai/models/claude-sonnet-5-5-medium"
+    },
+    {
+      "model": "sonnet-5.5",
+      "effort": "high",
+      "score": 47,
+      "cost_usd": 1.12,
+      "ttft_s": 13,
+      "benchmark": "AA Intelligence Index v4.3.2",
+      "source": "https://artificialanalysis.ai/models/claude-sonnet-5-5-high"
+    },
+    {
+      "model": "opus-5.5",
+      "effort": "medium",
+      "score": 51,
+      "cost_usd": 1.34,
+      "ttft_s": 24,
+      "benchmark": "AA Intelligence Index v4.3.2",
+      "source": "https://artificialanalysis.ai/models/claude-opus-5-5-medium"
+    },
+    {
+      "model": "opus-5.5",
+      "effort": "high",
+      "score": 54,
+      "cost_usd": 1.82,
+      "ttft_s": 34,
+      "benchmark": "AA Intelligence Index v4.3.2",
+      "source": "https://artificialanalysis.ai/models/claude-opus-5-5-high"
+    },
+    {
+      "model": "opus-5.5",
+      "effort": "xhigh",
+      "score": 56,
+      "cost_usd": 3.46,
+      "ttft_s": 153,
+      "benchmark": "AA Intelligence Index v4.3.2",
+      "source": "https://artificialanalysis.ai/models/claude-opus-5-5-xhigh"
+    },
+    {
+      "model": "opus-5.5",
+      "effort": "max",
+      "score": 58,
+      "cost_usd": 5.98,
+      "ttft_s": 716,
+      "benchmark": "AA Intelligence Index v4.3.2",
+      "source": "https://artificialanalysis.ai/models/claude-opus-5-5"
+    }
+  ],
+  "swe_bench_pro": {
+    "model": "opus",
+    "benchmark": "SWE-bench Pro subset",
+    "source": "https://platform.claude.com/docs/en/about-claude/models/optimizing-for-cost-and-intelligence",
+    "cells": [
+      {
+        "effort": "low",
+        "solved_pct": 87.4,
+        "cost_per_solved_usd": 0.12
+      },
+      {
+        "effort": "medium",
+        "solved_pct": 92.8,
+        "cost_per_solved_usd": 0.22
+      },
+      {
+        "effort": "high",
+        "solved_pct": 95.3,
+        "cost_per_solved_usd": 0.29
+      }
+    ]
+  },
+  "quota_note": "Quota weighting per model is unpublished, so $ is an API-price proxy only. Choose by balance of intelligence, speed (AA TTFT incl. thinking) and cost, never cost alone.",
+  "codex_ladder": [
+    {
+      "model": "gpt-6.1-sol",
+      "effort": "low",
+      "score": 42,
+      "cost_usd": 0.13,
+      "ttft_s": 3,
+      "benchmark": "Artificial Analysis Intelligence Index v4.3.2",
+      "source": "https://artificialanalysis.ai/models/gpt-6-1-sol-low"
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "effort": "medium",
+      "score": 48,
+      "cost_usd": 0.21,
+      "ttft_s": 5,
+      "benchmark": "Artificial Analysis Intelligence Index v4.3.2",
+      "source": "https://artificialanalysis.ai/models/gpt-6-1-sol-medium"
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "score": 50,
+      "cost_usd": 0.32,
+      "ttft_s": 51,
+      "benchmark": "Artificial Analysis Intelligence Index v4.3.2",
+      "source": "https://artificialanalysis.ai/models/gpt-6-1-sol-high"
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "effort": "xhigh",
+      "score": 51,
+      "cost_usd": 0.39,
+      "ttft_s": 161,
+      "benchmark": "Artificial Analysis Intelligence Index v4.3.2",
+      "source": "https://artificialanalysis.ai/models/gpt-6-1-sol-xhigh"
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "effort": "max",
+      "score": 52,
+      "cost_usd": 0.72,
+      "ttft_s": 273,
+      "benchmark": "Artificial Analysis Intelligence Index v4.3.2",
+      "source": "https://artificialanalysis.ai/models/gpt-6-1-sol"
+    },
+    {
+      "model": "gpt-6-luna",
+      "effort": "low",
+      "score": 22,
+      "cost_usd": 0.0045,
+      "ttft_s": 2,
+      "benchmark": "Artificial Analysis Intelligence Index v4.3.2",
+      "source": "https://artificialanalysis.ai/models/gpt-6-luna-low"
+    },
+    {
+      "model": "gpt-6-luna",
+      "effort": "medium",
+      "score": 30,
+      "cost_usd": 0.02,
+      "ttft_s": null,
+      "ttft_estimate_s": 5,
+      "ttft_estimate": "AA lists no medium TTFT; geometric mean of low 2s and high 14s",
+      "benchmark": "Artificial Analysis Intelligence Index v4.3.2",
+      "source": "https://artificialanalysis.ai/models/gpt-6-luna-medium"
+    },
+    {
+      "model": "gpt-6-luna",
+      "effort": "high",
+      "score": 33,
+      "cost_usd": 0.03,
+      "ttft_s": 14,
+      "benchmark": "Artificial Analysis Intelligence Index v4.3.2",
+      "source": "https://artificialanalysis.ai/models/gpt-6-luna-high"
+    },
+    {
+      "model": "gpt-6-luna",
+      "effort": "xhigh",
+      "score": 35,
+      "cost_usd": 0.04,
+      "ttft_s": 26,
+      "benchmark": "Artificial Analysis Intelligence Index v4.3.2",
+      "source": "https://artificialanalysis.ai/models/gpt-6-luna-xhigh"
+    },
+    {
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "score": 38,
+      "cost_usd": 0.07,
+      "ttft_s": 96,
+      "benchmark": "Artificial Analysis Intelligence Index v4.3.2",
+      "source": "https://artificialanalysis.ai/models/gpt-6-luna"
+    },
+    {
+      "model": "gpt-6-luna",
+      "effort": "none",
+      "score": 18,
+      "cost_usd": 0.01,
+      "ttft_s": 1,
+      "benchmark": "Artificial Analysis Intelligence Index v4.3.2",
+      "source": "https://artificialanalysis.ai/models/gpt-6-luna-non-reasoning"
+    },
+    {
+      "model": "gpt-6-astra",
+      "effort": "low",
+      "score": 46,
+      "cost_usd": 0.82,
+      "ttft_s": 2,
+      "benchmark": "Artificial Analysis Intelligence Index v4.3.2",
+      "source": "https://artificialanalysis.ai/models/gpt-6-astra-low"
+    },
+    {
+      "model": "gpt-6-astra",
+      "effort": "medium",
+      "score": 50,
+      "cost_usd": 1.54,
+      "ttft_s": 6,
+      "benchmark": "Artificial Analysis Intelligence Index v4.3.2",
+      "source": "https://artificialanalysis.ai/models/gpt-6-astra-medium"
+    },
+    {
+      "model": "gpt-6-astra",
+      "effort": "high",
+      "score": 51,
+      "cost_usd": 1.73,
+      "ttft_s": 80,
+      "benchmark": "Artificial Analysis Intelligence Index v4.3.2",
+      "source": "https://artificialanalysis.ai/models/gpt-6-astra-high"
+    },
+    {
+      "model": "gpt-6-astra",
+      "effort": "xhigh",
+      "score": 52,
+      "cost_usd": 2.31,
+      "ttft_s": 143,
+      "benchmark": "Artificial Analysis Intelligence Index v4.3.2",
+      "source": "https://artificialanalysis.ai/models/gpt-6-astra-xhigh"
+    },
+    {
+      "model": "gpt-6-astra",
+      "effort": "max",
+      "score": 53,
+      "cost_usd": 3.26,
+      "ttft_s": 288,
+      "benchmark": "Artificial Analysis Intelligence Index v4.3.2",
+      "source": "https://artificialanalysis.ai/models/gpt-6-astra"
+    }
+  ],
+  "taste_note": "Taste is how well a model one-shots loosely specified work judged by eye (layout, spacing, hierarchy, polish, tone) beyond what its intelligence predicts. value.py derives it, in AA points, as each model's Design Arena overall Elo (DA, human votes on blind design tournaments) minus the Elo a straight-line fit on AA predicts. Roles with a taste weight count it that many times (design 2, Gabriel's ask: double whatever the leaderboard says). DA as of 2026-10-05; 6.1 Sol is unrated, so its DA is GPT-6 Sol's. Retune by updating DA scores."
+}

@@ -1,0 +1,63 @@
+# Looks
+theme = Citruszest              
+font-family = "JetBrains Mono"     
+font-size = 14
+background-opacity = 0.95
+background-blur-radius = 20
+
+# Behavior
+mouse-hide-while-typing = true
+copy-on-select = true
+clipboard-write = allow
+
+# Remote workspaces (2-9) run over mosh, and mosh's terminal emulator drops
+# OSC 52, so tmux's set-clipboard can never reach the Mac clipboard there.
+# Shift+drag is the escape hatch: it suppresses mouse reporting so Ghostty
+# does the selection locally and copy-on-select handles the rest.
+# 'never' stops a remote program overriding this via XTSHIFTESCAPE.
+mouse-shift-capture = never
+confirm-close-surface = false
+
+# Padding
+window-padding-x = 12
+window-padding-y = 12
+window-padding-balance = true
+
+term = xterm-256color
+# tabs = title bar merged into the tab bar: one slim bar, native tabs intact.
+# NOTE: 'hidden' is a trap: macOS tabbing lives in the titlebar, so hidden
+# turns every new tab into a real separate window (breaks the whole ae-switch
+# single-window model AND the AppleScript bridge).
+macos-titlebar-style = tabs
+window-save-state = never
+
+# Native macOS fullscreen moves the window into its own Space. AeroSpace only
+# manages the current Space, so the window vanishes from its workspace, the veil
+# (which spans Spaces) stays behind, and the layout is left with a hole in it
+# ("fullscreen breaks everything"). Non-native fullscreen just resizes the window
+# to fill the screen in place, which AeroSpace understands. Use ⌥⇧F for other
+# apps (aerospace's own fullscreen); the green button is the thing to avoid.
+macos-non-native-fullscreen = true
+
+# Cmd+Shift+W kills the current tmux session (forwards tmux prefix ctrl-space + X)
+# rather than just closing the split, which cleans up the persistent remote session too.
+keybind = cmd+shift+w=text:\x00X
+
+# Splits: Cmd+Shift+[ / ] = prev/next split (cmd+[ / ] goes to Aerospace)
+keybind = cmd+shift+[=goto_split:previous
+keybind = cmd+shift+]=goto_split:next
+
+# Tabs-within-a-workspace = tmux windows (forwarded prefix keys).
+# cmd+t new, cmd+shift+←/→ prev/next. NOTE cmd+t deliberately shadows
+# Ghostty's real new-tab: real tabs are managed by ae-switch only.
+keybind = cmd+t=text:\x00c
+keybind = cmd+shift+left=text:\x00p
+keybind = cmd+shift+right=text:\x00n
+
+# Scrollback (tmux copy-mode does the work, see tmux.conf PageUp binding):
+# cmd+↑/↓ and cmd+shift+↑/↓ = page up/down; paging to the bottom auto-exits.
+keybind = cmd+up=text:\x1b[5~
+keybind = cmd+down=text:\x1b[6~
+keybind = cmd+shift+up=text:\x1b[5~
+keybind = cmd+shift+down=text:\x1b[6~
+

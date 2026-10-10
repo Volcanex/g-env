@@ -1,0 +1,73 @@
+#!/usr/bin/python3
+"""Publish actual AeroSpace focus independently of the workspace switch path."""
+
+import fcntl
+import json
+import re
+import subprocess
+import time
+from pathlib import Path
+
+AEROSPACE = str(Path.home() / ".local/bin/aerospace")
+HEARTBEAT = 30
+SSH_CONFIG = str(Path.home() / ".ssh/ae-presence/config")
+# mktemp and rename share a filesystem; readers only ever see complete JSON.
+# h's checkouts sit beside its framework, which ~/.agents/session-context.py links into.
+PUBLISH = """set -eu
+cd "$(dirname "$(readlink -f ~/.agents/session-context.py)")/../../g-site/data"
+tmp=$(mktemp .presence.XXXXXXXX)
+trap 'rm -f "$tmp"' EXIT
+cat > "$tmp"
+chmod 644 "$tmp"
+mv -f "$tmp" presence.json
+"""
+
+
+def focused_workspace():
+    result = subprocess.run(
+        [AEROSPACE, "list-workspaces", "--focused"],
+        capture_output=True, text=True, check=True, timeout=3,
+    )
+    value = result.stdout.strip()
+    return int(value.rstrip("x")) if re.fullmatch(r"[0-9]+x?", value) else None
+
+
+def publish(workspace, observed_at):
+    subprocess.run(
+        ["/usr/bin/ssh", "-F", SSH_CONFIG, "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+         "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=1", "h", PUBLISH],
+        input=json.dumps({"workspace": workspace, "observed_at": observed_at}) + "\n",
+        text=True, stdout=subprocess.DEVNULL, check=True, timeout=10,
+    )
+
+
+def main():
+    cache = Path.home() / ".cache/genv"
+    cache.mkdir(parents=True, exist_ok=True)
+    # Prevent a manual invocation racing launchd and publishing older samples.
+    with (cache / "presence.lock").open("w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        last_workspace = None
+        last_sent = 0
+        while True:
+            try:
+                workspace = focused_workspace()
+                now = time.time()
+                if workspace is not None and (
+                    workspace != last_workspace or now - last_sent >= HEARTBEAT
+                ):
+                    publish(workspace, int(now))
+                    last_workspace, last_sent = workspace, now
+            except (OSError, subprocess.SubprocessError) as error:
+                print(f"ae-presence: {error}", flush=True)
+                # No queued observations: retry with fresh focus and timestamp.
+                time.sleep(4)
+            # Sleep suspends with the Mac; wall time makes wake refresh promptly.
+            time.sleep(1)
+
+
+if __name__ == "__main__":
+    main()

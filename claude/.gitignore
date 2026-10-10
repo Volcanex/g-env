@@ -1,0 +1,30 @@
+sessions/
+cache/
+downloads/
+file-history/
+history.jsonl
+mcp-needs-auth-cache.json
+paste-cache/
+session-env/
+shell-snapshots/
+telemetry/
+backups/
+settings.json.backup*
+settings.local.json
+projects/**/*.jsonl
+daemon.log
+daemon.lock
+daemon.status.json
+daemon-auth-status.json
+daemon-auth-cooldown
+scheduled_tasks.lock
+stats-cache.json
+.last-cleanup
+.last-update-result.json
+tasks/
+jobs/
+plugins/marketplaces/
+plugins/cache/
+# Daemon state, including the control key: an instance carries the key in
+# env/claude/daemon/control.key.
+daemon/

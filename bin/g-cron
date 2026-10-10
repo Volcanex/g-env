@@ -1,0 +1,647 @@
+#!/usr/bin/env python3
+"""List every scheduled job across the operator's hosts, discovered not registered.
+
+    g-cron [list] [--host H] [--json] [--all] [--record]
+    g-cron status [--json]        only problems; exit 1 if any
+
+Three kinds of job:
+  timer  systemd timers (system and --user) on every host in the instance manifest.
+         Defined as unit files in /etc/systemd/system (or ~/.config/systemd/user);
+         g-env-linux/systemd and the instance's systemd/ hold tracked copies of some.
+  cron   crontab entries (every user's, as root, and /etc/cron.d) on every host.
+  pulse  model jobs on h: brain/.pulse/crons/*.md (frontmatter: name, schedule,
+         runner, role, enabled). pulse-cron-dispatch.timer runs them; those with
+         runner agent go through genv/bin/g-agent-run. Run history comes from
+         brain/.pulse/state/cron-runs.jsonl (cron-runs.json and cron.log as fallback).
+
+Model jobs live in brain/.pulse/crons/*.md and run via genv/bin/g-agent-run; to
+swap vendors edit genv/context/providers.json. For non-pulse jobs the model column
+is a best-effort grep of the command and its script for claude / codex exec /
+g-agent-run / openrouter, shown with a trailing "?".
+
+--record writes the full JSON (noise included, flagged) to ~/.cache/genv/g-cron.json
+for gcommand; g-cron.timer does that every 15 min. Remote hosts are read over
+`ssh -o BatchMode=yes` by piping this script to the remote python3 with --collect;
+an unreachable host becomes a row, never a crash.
+"""
+import argparse
+import datetime as dt
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+HERE = Path(__file__).resolve()
+sys.path.insert(0, str(HERE.parent.parent / "context"))
+try:
+    from instance import framework, instance
+    MANIFEST, WORKSPACE = instance("manifest"), framework().parent
+except ImportError:  # piped to a remote python3 for --collect, which reads neither
+    MANIFEST = WORKSPACE = None
+CACHE = Path.home() / ".cache/genv/g-cron.json"
+PULSE = Path(os.environ.get("G_CRON_PULSE") or (WORKSPACE or Path.home()) / "brain/.pulse")
+LOCAL_HOST = os.environ.get("G_CRON_LOCAL_HOST", "h")
+SSH_TIMEOUT = 45
+
+NOISE = re.compile(r"^(apt|logrotate|man-db|fstrim|motd|e2scrub|dpkg|update-notifier|systemd-tmpfiles|"
+                   r"fwupd|sysstat|snapd|apport|ua-timer|launchpadlib|mdmonitor|mdcheck|certbot)", re.I)
+MODEL_RE = re.compile(r"g-agent-run|codex exec|openrouter|\bclaude\b", re.I)
+MODEL_NAMES = {"g-agent-run": "g-agent-run", "codex exec": "codex", "openrouter": "openrouter", "claude": "claude"}
+
+
+# ---------------------------------------------------------------- cron expressions
+
+def _field(text, lo, hi, dow=False):
+    out = set()
+    for part in text.split(","):
+        step = 1
+        if "/" in part:
+            part, s = part.split("/", 1)
+            step = int(s)
+        if part in ("*", ""):
+            a, b = lo, hi
+        elif "-" in part:
+            a, b = (int(x) for x in part.split("-", 1))
+        else:
+            a = int(part)
+            b = hi if step != 1 else a
+        out.update(range(a, b + 1, step))
+    if dow:
+        out = {0 if v == 7 else v for v in out}
+    return out
+
+
+MACROS = {"@hourly": "0 * * * *", "@daily": "0 0 * * *", "@midnight": "0 0 * * *",
+          "@weekly": "0 0 * * 0", "@monthly": "0 0 1 * *", "@yearly": "0 0 1 1 *", "@annually": "0 0 1 1 *"}
+
+
+def parse_cron(expr):
+    """-> (minute, hour, dom, month, dow sets, dom_star, dow_star) or None (e.g. @reboot, bad)."""
+    expr = MACROS.get(expr.strip(), expr.strip())
+    f = expr.split()
+    if len(f) != 5:
+        return None
+    try:
+        return (_field(f[0], 0, 59), _field(f[1], 0, 23), _field(f[2], 1, 31), _field(f[3], 1, 12),
+                _field(f[4], 0, 6, dow=True), f[2].startswith("*"), f[4].startswith("*"))
+    except ValueError:
+        return None
+
+
+def _day_ok(p, d):
+    _, _, dom, month, dow, dom_star, dow_star = p
+    if d.month not in month:
+        return False
+    dm, dw = d.day in dom, (d.isoweekday() % 7) in dow
+    if dom_star or dow_star:
+        return dm and dw
+    return dm or dw
+
+
+def next_fire(expr, after, tz=None, horizon_days=400):
+    """Epoch of the first minute strictly after `after` that matches `expr`, or None."""
+    p = parse_cron(expr)
+    if not p:
+        return None
+    t = dt.datetime.fromtimestamp(after, tz).replace(second=0, microsecond=0) + dt.timedelta(minutes=1)
+    end = t + dt.timedelta(days=horizon_days)
+    while t < end:
+        if not _day_ok(p, t):
+            t = (t + dt.timedelta(days=1)).replace(hour=0, minute=0)
+            continue
+        if t.hour not in p[1]:
+            t = (t + dt.timedelta(hours=1)).replace(minute=0)
+            continue
+        if t.minute in p[0]:
+            return t.timestamp()
+        t += dt.timedelta(minutes=1)
+    return None
+
+
+# ---------------------------------------------------------------- model detection
+
+def detect_model(argv_text):
+    """Best-effort: which model vendors does this command or its script mention."""
+    blobs = [argv_text]
+    for tok in shlex.split(argv_text) if argv_text else []:
+        p = Path(tok.split("=", 1)[-1])
+        if p.suffix in (".py", ".sh", ".mjs", ".js") or p.name.startswith(("g-", "compute", "brain")):
+            try:
+                if p.is_file() and p.stat().st_size < 400_000:
+                    blobs.append(p.read_text(errors="ignore"))
+            except OSError:
+                pass
+    found = []
+    for m in MODEL_RE.finditer("\n".join(blobs)):
+        n = MODEL_NAMES[m.group(0).lower()]
+        if n not in found:
+            found.append(n)
+    return found
+
+
+# ---------------------------------------------------------------- local collection
+
+def run(cmd, env=None, timeout=20):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+        return r.returncode, r.stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return 1, ""
+
+
+def _blocks(text):
+    for block in text.strip().split("\n\n"):
+        d = {}
+        for line in block.splitlines():
+            k, _, v = line.partition("=")
+            d[k] = d[k] + " " + v if k in d else v  # TimersMonotonic repeats
+        if d:
+            yield d
+
+
+def _ts(v):
+    v = (v or "").strip()
+    return int(v[1:]) if v.startswith("@") and v[1:].isdigit() else None
+
+
+SECRET = re.compile(r"((?:token|key|secret|passw(?:or)?d|auth)\w*(?:=|\s+))\S+", re.I)
+
+
+def redact(text):
+    return SECRET.sub(r"\1***", text)
+
+
+def _argv(execstart):
+    m = re.search(r"argv\[\]=(.*?) ; ignore_errors", execstart or "")
+    return redact(m.group(1)) if m else ""
+
+
+def _schedule(d):
+    cal = re.findall(r"OnCalendar=(.*?) ;", d.get("TimersCalendar", ""))
+    mono = re.findall(r"(OnBootUSec|OnStartupUSec|OnUnitActiveUSec|OnUnitInactiveUSec|OnActiveUSec)=(\S+)", d.get("TimersMonotonic", ""))
+    out = [c.replace("*-*-* ", "") for c in cal]
+    kinds = {k for k, _ in mono}
+    for k, v in mono:
+        if k in ("OnUnitActiveUSec", "OnUnitInactiveUSec"):
+            out.append(f"every {v}")
+        elif "OnUnitActiveUSec" not in kinds:
+            out.append(f"boot+{v}")
+    return ", ".join(out) or "-"
+
+
+def _interval(d):
+    m = re.search(r"OnUnitActiveUSec=(\S+)", d.get("TimersMonotonic", ""))
+    if not m:
+        return None
+    total = 0
+    for n, u in re.findall(r"(\d+(?:\.\d+)?)\s*(min|h|s|d|w|ms)?", m.group(1)):
+        total += float(n) * {"": 1, "s": 1, "ms": 0.001, "min": 60, "h": 3600, "d": 86400, "w": 604800}[u]
+    return total or None
+
+
+def collect_timers(user_scope):
+    env = None
+    base = ["systemctl"] + (["--user"] if user_scope else [])
+    if user_scope:
+        rt = f"/run/user/{os.getuid()}"
+        if not os.path.isdir(rt):
+            return []
+        env = dict(os.environ, XDG_RUNTIME_DIR=rt, DBUS_SESSION_BUS_ADDRESS=f"unix:path={rt}/bus")
+    rc, out = run(base + ["list-timers", "--all", "--output=json", "--no-pager"], env)
+    if rc != 0 or not out.strip():
+        return []
+    try:
+        listing = json.loads(out)
+    except ValueError:
+        return []
+    props = "Id,Description,TimersCalendar,TimersMonotonic,ActiveState,UnitFileState"
+    _, tshow = run(base + ["show", "-t", "timer", "--all", "--timestamp=unix", "-p", props], env)
+    tinfo = {d["Id"]: d for d in _blocks(tshow) if "Id" in d}
+    svcs = sorted({r["activates"] for r in listing if r.get("activates")})
+    sprops = "Id,Description,Result,ExecMainStatus,ExecMainExitTimestamp,ActiveState,ExecStart"
+    _, sshow = run(base + ["show", "--timestamp=unix", "-p", sprops] + svcs, env)
+    sinfo = {d["Id"]: d for d in _blocks(sshow) if "Id" in d}
+    rows = []
+    for r in listing:
+        unit, svc = r.get("unit", ""), r.get("activates", "")
+        t, s = tinfo.get(unit, {}), sinfo.get(svc, {})
+        argv = _argv(s.get("ExecStart"))
+        last = r.get("last")
+        last = last // 1_000_000 if last else None
+        nxt = r.get("next")
+        nxt = nxt // 1_000_000 if nxt else None
+        exit_ts = _ts(s.get("ExecMainExitTimestamp"))
+        rows.append({
+            "kind": "timer", "name": unit[:-6] if unit.endswith(".timer") else unit,
+            "scope": "user" if user_scope else "system",
+            "schedule": _schedule(t), "next": nxt, "last": last or exit_ts,
+            "result": (s.get("Result") or "-") if (last or exit_ts) else "-", "exit": s.get("ExecMainStatus"),
+            "service_state": s.get("ActiveState"), "timer_state": t.get("ActiveState"),
+            "interval_s": _interval(t), "enabled": t.get("UnitFileState") not in ("disabled", "masked"),
+            "description": (t.get("Description") or s.get("Description") or "").strip(),
+            "command": argv, "model_calls": detect_model(argv),
+        })
+    return rows
+
+
+def _cron_lines(text, system=False):
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", line):
+            continue
+        m = re.match(r"^(@\w+)\s+(.*)$", line) or re.match(r"^((?:\S+\s+){4}\S+)\s+(.*)$", line)
+        if not m:
+            continue
+        sched, rest = m.group(1), m.group(2).strip()
+        if system:
+            rest = rest.split(None, 1)[1] if len(rest.split(None, 1)) > 1 else ""
+        yield sched, redact(rest)
+
+
+def _cron_name(cmd):
+    tag = re.search(r"#\s*([\w.-]+)\s*$", cmd)
+    if tag:
+        return tag.group(1)
+    for tok in shlex.split(cmd.split(">>")[0].split(" > ")[0], posix=True) if cmd else []:
+        if re.search(r"\.(py|sh|mjs|js)$", tok):
+            return Path(tok).stem
+    toks = [t for t in cmd.split() if not t.startswith(("sleep", "&&", "cd", "/usr/bin/flock", "-"))]
+    return Path(toks[0]).name if toks else "cron"
+
+
+def collect_crons(is_root):
+    sources = [("crontab " + os.environ.get("USER", "me"), ["crontab", "-l"], False)]
+    if is_root:
+        spool, me = Path("/var/spool/cron/crontabs"), pwd.getpwuid(os.getuid()).pw_name
+        users = sorted(f.name for f in spool.iterdir() if f.name != me) if spool.is_dir() else []
+        sources += [(f"crontab {u}", ["crontab", "-u", u, "-l"], False) for u in users]
+    texts = [(lbl, run(c)[1], sys_) for lbl, c, sys_ in sources]
+    d = Path("/etc/cron.d")
+    if d.is_dir():
+        for f in sorted(d.iterdir()):
+            try:
+                texts.append((f"/etc/cron.d/{f.name}", f.read_text(), True))
+            except OSError:
+                pass
+    now = time.time()
+    rows = []
+    for label, text, system in texts:
+        for sched, cmd in _cron_lines(text, system):
+            name = Path(label).name if label.startswith("/etc/cron.d/") else _cron_name(cmd)
+            rows.append({
+                "kind": "cron", "name": name, "scope": label, "schedule": sched,
+                "next": next_fire(sched, now), "last": None, "result": "-", "exit": None,
+                "enabled": True, "description": cmd[:200], "command": cmd[:300],
+                "model_calls": detect_model(cmd),
+                "noise": bool(NOISE.match(name) or NOISE.match(Path(cmd.split()[0]).name if cmd.split() else "")),
+            })
+    return rows
+
+
+def collect_host():
+    is_root = os.getuid() == 0
+    rows = collect_timers(False) + collect_timers(True) + collect_crons(is_root)
+    for r in rows:
+        r.setdefault("noise", bool(NOISE.match(r["name"])))
+    return {"jobs": rows, "collected_at": time.time(), "user": os.environ.get("USER") or str(os.getuid())}
+
+
+# ---------------------------------------------------------------- pulse
+
+def _frontmatter(text):
+    m = re.match(r"^---\n(.*?)\n---\n?(.*)$", text, re.S)
+    if not m:
+        return {}, text
+    fm = {}
+    for line in m.group(1).splitlines():
+        if line.lstrip().startswith("#") or ":" not in line:
+            continue
+        k, _, v = line.partition(":")
+        v = re.sub(r"\s+#.*$", "", v).strip().strip('"').strip("'")
+        fm[k.strip()] = v
+    return fm, m.group(2)
+
+
+def _read_jsonl(path):
+    latest = {}
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return latest
+    for line in lines:
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(rec, dict) and rec.get("name"):
+            latest[rec["name"]] = rec  # file is append-ordered, last wins
+    return latest
+
+
+def _read_cron_log(path):
+    out = {}
+    try:
+        lines = path.read_text().splitlines()[-2000:]
+    except OSError:
+        return out
+    for line in lines:
+        m = re.match(r"(\S+) name=(\S+) exit=(-?\d+) duration=(\d+)s(?: last_line=(.*))?$", line)
+        if m:
+            out[m.group(2)] = {"started": m.group(1), "exit": int(m.group(3)),
+                               "duration_s": int(m.group(4)), "summary": (m.group(5) or "").strip("'\"")}
+    return out
+
+
+def _iso(v):
+    try:
+        d = dt.datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=dt.timezone.utc)
+        return d.timestamp()
+    except ValueError:
+        return None
+
+
+def collect_pulse(now=None):
+    now = now or time.time()
+    crons = PULSE / "crons"
+    if not crons.is_dir():
+        return []
+    try:
+        runs = json.loads((PULSE / "state/cron-runs.json").read_text())
+    except (OSError, ValueError):
+        runs = {}
+    jsonl = _read_jsonl(PULSE / "state/cron-runs.jsonl")
+    log = _read_cron_log(PULSE / "state/cron.log")
+    rows = []
+    for f in sorted(crons.glob("*.md")):
+        if f.name.startswith("_"):
+            continue
+        fm, body = _frontmatter(f.read_text())
+        name = fm.get("name", f.stem)
+        sched = fm.get("schedule", "")
+        rec = jsonl.get(name)
+        last_ts, result, summary, provider, model = None, "-", "", None, None
+        if rec:
+            last_ts = _iso(rec.get("started"))
+            result, summary = rec.get("result") or "-", rec.get("summary") or ""
+            provider, model = rec.get("provider"), rec.get("model")
+            if result == "-" and rec.get("exit") is not None:
+                result = "ok" if rec["exit"] == 0 else "fail"
+        # dispatcher timestamps in cron-runs.json can be newer than the jsonl (older runs, no jsonl yet)
+        legacy = _iso(runs.get(name)) if name in runs else None
+        if legacy and (last_ts is None or legacy > last_ts + 1):
+            last_ts = legacy
+            lg = log.get(name)
+            result = ("ok" if lg["exit"] == 0 else "fail") if lg else "-"
+            summary = lg["summary"] if lg else ""
+            provider = model = None
+        role = fm.get("role") or ""
+        enabled = fm.get("enabled", "false").lower() == "true"
+        label = fm.get("model") or "claude"
+        if role:
+            label = f"{role}/{provider or 'agent'}"
+        first = next((ln.strip() for ln in body.splitlines()
+                      if ln.strip() and not ln.startswith(("#", "<!--", "```"))), "")
+        nxt = next_fire(sched, now, dt.timezone.utc) if enabled and sched else None
+        rows.append({
+            "kind": "pulse", "name": name, "scope": "brain", "schedule": sched,
+            "next": nxt, "last": last_ts, "result": result, "exit": rec.get("exit") if rec else None,
+            "enabled": enabled, "runner": fm.get("runner"), "role": role or None,
+            "model": model or fm.get("model"), "provider": provider, "model_label": label,
+            "description": first, "summary": summary, "noise": False,
+            "model_calls": ["model"],
+            "file": str(f),
+        })
+    return rows
+
+
+# ---------------------------------------------------------------- hosts
+
+def load_hosts():
+    try:
+        hosts = json.loads(MANIFEST.read_text())["hosts"]
+    except (OSError, ValueError, KeyError, AttributeError):
+        hosts = [{"id": "h", "user": "root", "aliases": ["h"]}]
+    ssh_cfg = ""
+    try:
+        ssh_cfg = (Path.home() / ".ssh/config").read_text()
+    except OSError:
+        pass
+    declared = set()
+    for m in re.finditer(r"^\s*Host\s+(.+)$", ssh_cfg, re.M):
+        declared.update(m.group(1).split())
+    for h in hosts:
+        alias = next((a for a in [h["id"]] + h.get("aliases", []) if a in declared), None)
+        h["ssh"] = alias or (f"{h.get('user', 'root')}@{h['hostname']}" if h.get("hostname") else h["id"])
+    return hosts
+
+
+def collect_remote(host):
+    try:
+        with open(HERE) as fh:
+            r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=6", "-o", "ServerAliveInterval=5",
+                                host["ssh"], "python3", "-", "--collect"], stdin=fh,
+                               capture_output=True, text=True, timeout=SSH_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, f"ssh {type(e).__name__}"
+    if r.returncode != 0:
+        err = (r.stderr.strip().splitlines() or ["ssh failed"])[-1][:120]
+        return None, err
+    try:
+        return json.loads(r.stdout), None
+    except ValueError:
+        return None, "bad collector output"
+
+
+def gather(only_host=None):
+    hosts = [h for h in load_hosts() if not only_host or only_host in [h["id"]] + h.get("aliases", [])]
+
+    def one(h):
+        if h["id"] == LOCAL_HOST:
+            return h, collect_host(), None
+        data, err = collect_remote(h)
+        return h, data, err
+
+    with ThreadPoolExecutor(max_workers=max(1, len(hosts))) as ex:
+        results = list(ex.map(one, hosts))
+    jobs, host_rows = [], []
+    for h, data, err in results:
+        host_rows.append({"id": h["id"], "ssh": h["ssh"], "status": "ok" if data else "unreachable", "error": err})
+        if not data:
+            continue
+        for j in data["jobs"]:
+            j["host"] = h["id"]
+            jobs.append(j)
+        if h["id"] == LOCAL_HOST:
+            for j in collect_pulse():
+                j["host"] = h["id"]
+                jobs.append(j)
+    for j in jobs:
+        j["model_label"] = j.get("model_label") or (
+            "/".join(j["model_calls"]) + "?" if j.get("model_calls") else "-")
+    return {"generated_at": time.time(), "hosts": host_rows, "jobs": jobs, "problems": problems(jobs, host_rows)}
+
+
+# ---------------------------------------------------------------- problems
+
+def overdue_after(j, now):
+    """Seconds since last run beyond which the job counts as overdue, or None if unjudgeable."""
+    if j["kind"] == "pulse":
+        if not j["enabled"] or not j["last"]:
+            return None
+        nxt = next_fire(j["schedule"], j["last"], dt.timezone.utc)
+        if nxt is None:
+            return None
+        gap = nxt - j["last"]
+        return gap + max(900, gap * 0.5)
+    if j["kind"] == "timer":
+        if j.get("timer_state") != "active" or not j["last"]:
+            return None
+        if j.get("interval_s"):
+            return j["interval_s"] * 3 + 300
+        if j["next"] and j["next"] > j["last"]:
+            return max(3600, (j["next"] - j["last"]) * 2.5)
+    return None
+
+
+def problems(jobs, host_rows, now=None):
+    now = now or time.time()
+    out = []
+    for h in host_rows:
+        if h["status"] != "ok":
+            out.append({"host": h["id"], "name": "-", "kind": "host", "problem": "unreachable", "detail": h["error"] or ""})
+    for j in jobs:
+        if j.get("noise") and j["kind"] != "pulse":
+            continue
+        base = {"host": j["host"], "name": j["name"], "kind": j["kind"]}
+        if j["kind"] == "timer":
+            if j["result"] not in ("success", "-") or j.get("service_state") == "failed":
+                out.append({**base, "problem": "failed", "detail": f"result={j['result']} exit={j['exit']}"})
+        if j["kind"] == "pulse" and j["enabled"] and j["result"] in ("fail", "noop", "missing"):
+            out.append({**base, "problem": f"last result {j['result']}", "detail": (j.get("summary") or "")[:160]})
+        limit = overdue_after(j, now)
+        if limit and now - j["last"] > limit:
+            out.append({**base, "problem": "overdue", "detail": f"last {rel(j['last'], now)}, expected within {dur(limit)}"})
+    return out
+
+
+# ---------------------------------------------------------------- output
+
+def dur(s):
+    s = abs(int(s))
+    for n, u in ((86400, "d"), (3600, "h"), (60, "m")):
+        if s >= n:
+            return f"{s // n}{u}"
+    return f"{s}s"
+
+
+def rel(ts, now=None):
+    if not ts:
+        return "-"
+    now = now or time.time()
+    return f"in {dur(ts - now)}" if ts > now else f"{dur(now - ts)} ago"
+
+
+def table(data, show_all):
+    now = time.time()
+    rows = []
+    for j in data["jobs"]:
+        if j.get("noise") and not show_all:
+            continue
+        nxt = "off" if (j["kind"] == "pulse" and not j["enabled"]) else rel(j["next"], now)
+        if j["kind"] == "timer" and j.get("scope") == "user":
+            name = j["name"] + " (u)"
+        else:
+            name = j["name"]
+        rows.append([j["host"], j["kind"], name, j["schedule"] or "-", nxt, rel(j["last"], now) if j["last"] else "never" if j["kind"] != "cron" else "-",
+                     j["result"], j["model_label"], j.get("description", "")])
+    order = {"timer": 0, "cron": 1, "pulse": 2}
+    rows.sort(key=lambda r: (r[0], order[r[1]], r[2]))
+    head = ["HOST", "KIND", "NAME", "SCHEDULE", "NEXT", "LAST", "RESULT", "MODEL", "DESCRIPTION"]
+    caps = [4, 5, 28, 18, 8, 8, 9, 14, 0]
+    widths = [min(max(len(str(x[i])) for x in rows + [head]), caps[i] or 999) for i in range(8)]
+    total = shutil.get_terminal_size((120, 24)).columns
+    desc_w = max(12, total - sum(widths) - 2 * 8)
+    lines = []
+    for r in [head] + rows:
+        cells = [str(r[i])[:widths[i]].ljust(widths[i]) for i in range(8)]
+        d = str(r[8]).replace("\n", " ")
+        cells.append(d[:desc_w - 1] + "…" if len(d) > desc_w else d)
+        lines.append("  ".join(cells).rstrip())
+    for h in data["hosts"]:
+        if h["status"] != "ok":
+            lines.append(f"{h['id']:<4}  host  unreachable  {h['error'] or ''}")
+    hidden = sum(1 for j in data["jobs"] if j.get("noise") and j["kind"] != "pulse")
+    lines.append("hosts: " + ", ".join(f"{h['id']} {h['status']}" for h in data["hosts"])
+                 + ("" if show_all or not hidden else f"  ({hidden} OS-noise jobs hidden, --all shows them)"))
+    return "\n".join(lines)
+
+
+def status_text(data):
+    if not data["problems"]:
+        return "g-cron: no problems"
+    lines = [f"g-cron: {len(data['problems'])} problem(s)"]
+    for p in data["problems"]:
+        lines.append(f"  {p['host']:<3} {p['kind']:<5} {p['name']:<32} {p['problem']}  {p['detail']}".rstrip())
+    return "\n".join(lines)
+
+
+def record(data):
+    CACHE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = CACHE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    tmp.chmod(0o600)
+    tmp.replace(CACHE)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="g-cron", description=__doc__.split("\n\n")[0],
+                                 epilog=__doc__.split("\n\n", 1)[1], formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--collect", action="store_true", help=argparse.SUPPRESS)
+    sub = ap.add_subparsers(dest="cmd")
+    for name in ("list", "status"):
+        p = sub.add_parser(name, help="all jobs" if name == "list" else "only problems; exit 1 if any")
+        S = argparse.SUPPRESS
+        p.add_argument("--json", action="store_true", default=S)
+        p.add_argument("--record", action="store_true", default=S, help=f"write full JSON to {CACHE}")
+        p.add_argument("--quiet", action="store_true", default=S, help="no output (timer mode)")
+        p.add_argument("--host", default=S, help="only this host id or alias")
+        p.add_argument("--all", action="store_true", default=S, help="include OS-noise timers (apt, logrotate, ...)")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--record", action="store_true")
+    ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--host")
+    ap.add_argument("--all", action="store_true")
+    args = ap.parse_args(argv)
+    if args.collect:
+        print(json.dumps(collect_host()))
+        return 0
+    cmd = args.cmd or "list"
+    data = gather(args.host)
+    if args.record:
+        record(data)
+    if args.quiet:
+        return 0
+    shown = data
+    if not args.all:
+        shown = dict(data, jobs=[j for j in data["jobs"] if not j.get("noise") or j["kind"] == "pulse"])
+    if args.json:
+        print(json.dumps(data if cmd == "list" and args.all else shown if cmd == "list" else
+                         {"generated_at": data["generated_at"], "hosts": data["hosts"], "problems": data["problems"]}, indent=2))
+    elif cmd == "status":
+        print(status_text(data))
+    else:
+        print(table(data, args.all))
+    return 1 if cmd == "status" and data["problems"] else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

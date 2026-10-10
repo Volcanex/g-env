@@ -1,0 +1,455 @@
+#!/usr/bin/env python3
+"""Weekly refresh of context/models.json (model roster + effort ladder) from the web.
+
+    refresh-models [--dry-run] [--candidate-file F] [--repo DIR]
+
+Pipeline (all model calls go through g-agent-run, never a vendor CLI):
+  gather  role: a cheap web-search agent returns candidate facts as JSON, each with a URL and quote.
+  verify  role: a second agent re-reads each URL, resolves conflicts (vendor pages first, then
+          Artificial Analysis), recomputes the non-dominated ladder, writes a candidate models.json.
+  guards: schema validation (URL on every number, as_of is today) -> diff -> commit/push, or
+          hold for review when a score moves >= REVIEW_SCORE_DELTA or more than REVIEW_MODELS models change.
+--dry-run does everything except write models.json, commit and page; it prints the diff.
+--candidate-file skips gather/verify and applies the guards to that file (tests, manual review).
+Exit 0: no change, committed, or held for review. Exit 1: validation failed or every provider failed.
+"""
+import argparse
+import datetime as dt
+import difflib
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+import urllib.request
+
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / 'context'))
+from instance import instance  # noqa: E402
+CACHE = Path.home() / '.cache/genv'
+REVIEW_SCORE_DELTA = 5
+REVIEW_MODELS = 3
+LADDER_MAX_CHARS = 220
+EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
+ANTHROPIC = 'https://platform.claude.com/docs/en/'
+START_URLS = [
+    ANTHROPIC + 'about-claude/models/overview', ANTHROPIC + 'about-claude/pricing', ANTHROPIC + 'build-with-claude/effort',
+    ANTHROPIC + 'about-claude/models/optimizing-for-cost-and-intelligence',
+    'https://developers.openai.com/api/docs/models', 'https://developers.openai.com/api/docs/pricing',
+    'https://developers.openai.com/codex/models', 'https://artificialanalysis.ai/leaderboards/models',
+]
+
+CTX = importlib.util.spec_from_file_location('session_context', REPO / 'context/session-context.py')
+ctx = importlib.util.module_from_spec(CTX)
+CTX.loader.exec_module(ctx)
+
+
+def say(*parts):
+    print(*parts, flush=True)
+
+
+# --------------------------------------------------------------------------- schema
+
+def is_url(value):
+    return isinstance(value, str) and re.fullmatch(r'https://[^\s/]+\.[^\s/]+/?\S*', value) is not None
+
+
+def is_num(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def validate(data, today):
+    """Every reason the file is unusable; empty list when it is sound."""
+    errors = []
+    if not isinstance(data, dict):
+        return ['top level is not an object']
+    if data.get('as_of') != today.isoformat():
+        errors.append(f"as_of is {data.get('as_of')!r}, expected {today.isoformat()}")
+    sources = data.get('sources')
+    if not isinstance(sources, list) or not sources:
+        errors.append('sources missing')
+    else:
+        errors += [f"sources[{i}] needs id, name and https url" for i, s in enumerate(sources)
+                   if not (isinstance(s, dict) and s.get('id') and s.get('name') and is_url(s.get('url')))]
+    models = data.get('models')
+    if not isinstance(models, list) or not models:
+        errors.append('models missing or empty')
+        models = []
+    seen = set()
+    for m in models:
+        mid = m.get('id') if isinstance(m, dict) else None
+        if not mid or mid in seen:
+            errors.append(f'model id missing or duplicated: {mid!r}')
+            continue
+        seen.add(mid)
+        for key in ('vendor', 'access', 'role'):
+            if not isinstance(m.get(key), str) or not m[key]:
+                errors.append(f'{mid}: {key} missing')
+        if not isinstance(m.get('scores'), dict):
+            errors.append(f'{mid}: scores must be an object')
+            continue
+        srcs = m.get('sources') or {}
+        for key, value in m['scores'].items():
+            if not is_num(value):
+                errors.append(f'{mid}: score {key} is not a number')
+            if not is_url(srcs.get(key)):
+                errors.append(f'{mid}: score {key} has no source URL')
+        if re.search(r'\d', m.get('cost') or '') and not is_url(srcs.get('cost')):
+            errors.append(f'{mid}: cost {m.get("cost")!r} has no source URL')
+    vendors = {m.get('id'): m.get('vendor') for m in models if isinstance(m, dict)}
+    ladder = data.get('effort_ladder')
+    if not isinstance(ladder, list) or not ladder:
+        errors.append('effort_ladder missing or empty')
+        ladder = []
+    for i, c in enumerate(ladder):
+        if not isinstance(c, dict):
+            errors.append(f'effort_ladder[{i}] is not an object')
+            continue
+        label = f"ladder {c.get('model')}-{c.get('effort')}"
+        if c.get('model') not in seen:
+            errors.append(f'{label}: model not in roster')
+        elif vendors.get(c['model']) != 'anthropic':
+            errors.append(f'{label}: the ladder holds Claude models only (other vendors stay in roster scores)')
+        if c.get('effort') not in EFFORTS:
+            errors.append(f'{label}: effort must be one of {EFFORTS}')
+        if not (is_num(c.get('score')) and is_num(c.get('cost_usd')) and c['cost_usd'] > 0 and is_num(c.get('ttft_s')) and c['ttft_s'] > 0):
+            errors.append(f'{label}: score, positive cost_usd and positive ttft_s required')
+        if not c.get('benchmark'):
+            errors.append(f'{label}: benchmark name missing')
+        if not is_url(c.get('source')):
+            errors.append(f'{label}: source URL missing')
+    ok_cells = [c for c in ladder if isinstance(c, dict) and all(is_num(c.get(k)) for k in ('score', 'cost_usd', 'ttft_s'))]
+    for a, b in zip(ok_cells, ok_cells[1:]):
+        if not b['cost_usd'] > a['cost_usd']:
+            errors.append(f"ladder not ordered by increasing cost: {a['model']}-{a['effort']} then {b['model']}-{b['effort']}")
+    for a in ok_cells:  # frontier over score (up), cost and latency (down)
+        for b in ok_cells:
+            if a is not b and dominates(b, a):
+                errors.append(f"ladder cell {a['model']}-{a['effort']} is dominated by {b['model']}-{b['effort']}")
+    if not isinstance(data.get('quota_note'), str) or 'quota' not in data['quota_note'].lower():
+        errors.append('quota_note missing')
+    swe = data.get('swe_bench_pro')
+    if not isinstance(swe, dict) or not is_url(swe.get('source')) or not swe.get('benchmark') or not swe.get('model'):
+        errors.append('swe_bench_pro needs model, benchmark and source URL')
+    else:
+        for c in swe.get('cells') or []:
+            if not (c.get('effort') in EFFORTS and is_num(c.get('solved_pct')) and is_num(c.get('cost_per_solved_usd'))):
+                errors.append(f'swe_bench_pro cell malformed: {c}')
+        if not swe.get('cells'):
+            errors.append('swe_bench_pro has no cells')
+    if not errors:
+        try:
+            tmp = path_of(data)
+            try:
+                line = [l for l in ctx.models_section(tmp, today).splitlines() if l.startswith('effort ladder')][0]
+            finally:
+                os.unlink(tmp)
+            if len(line) > LADDER_MAX_CHARS:
+                errors.append(f'rendered ladder line is {len(line)} chars, over {LADDER_MAX_CHARS}')
+        except Exception as error:  # the renderer must accept the file
+            errors.append(f'renderer rejects the file: {error!r}')
+    return errors
+
+
+def dominates(b, a):
+    """b is at least as good as a on score, cost and latency and strictly better on one."""
+    ge = b['score'] >= a['score'] and b['cost_usd'] <= a['cost_usd'] and b['ttft_s'] <= a['ttft_s']
+    gt = b['score'] > a['score'] or b['cost_usd'] < a['cost_usd'] or b['ttft_s'] < a['ttft_s']
+    return ge and gt
+
+
+def path_of(data):
+    handle = tempfile.NamedTemporaryFile('w', suffix='.json', delete=False)
+    with handle:
+        json.dump(data, handle)
+    return handle.name
+
+
+def normalise(data):
+    """Round ladder latency to whole seconds and cost to cents so source jitter is not a change."""
+    for c in data.get('effort_ladder', []) if isinstance(data, dict) else []:
+        if isinstance(c, dict):
+            if is_num(c.get('ttft_s')):
+                c['ttft_s'] = int(c['ttft_s'] + 0.5)
+            if is_num(c.get('cost_usd')):
+                c['cost_usd'] = round(c['cost_usd'], 2)
+    return data
+
+
+def dump(data):
+    return json.dumps(data, indent=1, ensure_ascii=False) + '\n'
+
+
+# --------------------------------------------------------------------------- diff
+
+def diff(old, new):
+    """Structured change summary between two models.json documents."""
+    om, nm = {m['id']: m for m in old['models']}, {m['id']: m for m in new['models']}
+    added, removed = sorted(nm.keys() - om.keys()), sorted(om.keys() - nm.keys())
+    changed = sorted(i for i in nm.keys() & om.keys() if nm[i] != om[i])
+    moves = []
+    for i in nm.keys() & om.keys():
+        for k, v in nm[i].get('scores', {}).items():
+            before = om[i].get('scores', {}).get(k)
+            if before is not None and v != before:
+                moves.append((f'{i} {k}', before, v))
+    oc = {(c['model'], c['effort']): c for c in old.get('effort_ladder', [])}
+    nc = {(c['model'], c['effort']): c for c in new['effort_ladder']}
+    for key in oc.keys() & nc.keys():
+        if oc[key]['score'] != nc[key]['score']:
+            moves.append((f'ladder {key[0].split("-")[0]}-{key[1]}', oc[key]['score'], nc[key]['score']))
+    ladder_changed = old.get('effort_ladder') != new['effort_ladder']
+    other = [k for k in sorted(set(old) | set(new)) if k not in ('as_of', 'models', 'effort_ladder') and old.get(k) != new.get(k)]
+    big = [m for m in moves if abs(m[2] - m[1]) >= REVIEW_SCORE_DELTA]
+    models_touched = len(added) + len(removed) + len(changed)
+    material = bool(added or removed or changed or ladder_changed or other)
+    text = ''.join(difflib.unified_diff(dump(old).splitlines(True), dump(new).splitlines(True), 'models.json (current)', 'models.json (candidate)'))
+    return dict(added=added, removed=removed, changed=changed, moves=moves, big_moves=big, ladder_changed=ladder_changed,
+                other=other, models_touched=models_touched, material=material,
+                needs_review=bool(big) or models_touched > REVIEW_MODELS, text=text)
+
+
+def summarise(d):
+    parts = []
+    if d['added']:
+        parts.append('added ' + ','.join(d['added']))
+    if d['removed']:
+        parts.append('removed ' + ','.join(d['removed']))
+    if d['changed']:
+        parts.append('changed ' + ','.join(d['changed']))
+    if d['ladder_changed']:
+        parts.append('ladder changed')
+    if d['other']:
+        parts.append('also ' + ','.join(d['other']))
+    parts += [f'{n} {a:g}->{b:g}' for n, a, b in d['moves']]
+    return '; '.join(parts) or 'no change'
+
+
+# --------------------------------------------------------------------------- notify
+
+def ntfy_url():
+    url = os.environ.get('NTFY_URL')
+    if url:
+        return url
+    for env in filter(None, (instance('env'), Path.home() / 'gcore/.env')):
+        try:
+            for line in env.read_text().splitlines():
+                if line.startswith('NTFY_URL='):
+                    return line.split('=', 1)[1].strip().strip('"\'')
+        except OSError:
+            continue
+    return ''
+
+
+def notify(level, msg):
+    """One ntfy push in the alert-spine format (brain_alerts.send). Never raises."""
+    say(f'[ntfy {level}] {msg}')
+    url = ntfy_url()
+    if not url:
+        say('[ntfy] NTFY_URL unset; not sent')
+        return False
+    priority = {'error': 'high', 'warn': 'high'}.get(level, 'default')
+    headers = {'Title': 'refresh-models', 'Priority': priority}
+    if level in ('error', 'warn'):
+        headers['Tags'] = 'warning'
+    try:
+        urllib.request.urlopen(urllib.request.Request(url, data=msg.encode(), headers=headers), timeout=10)
+        return True
+    except Exception as error:
+        say(f'[ntfy] push failed: {error}')
+        return False
+
+
+# --------------------------------------------------------------------------- model calls
+
+def agent(role, prompt, work, web, name, sandbox=None):
+    """Run one role through g-agent-run. Returns (text, meta) or raises RuntimeError."""
+    pfile, meta = work / f'{name}.prompt.txt', work / f'{name}.meta.json'
+    pfile.write_text(prompt)
+    cmd = [str(REPO / 'bin/g-agent-run'), '--role', role, '--prompt-file', str(pfile), '--workdir', str(work), '--meta', str(meta)]
+    cmd += ['--web'] if web else []
+    cmd += ['--sandbox', sandbox] if sandbox else []
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    sys.stderr.write(result.stderr)
+    try:
+        info = json.loads(meta.read_text())
+    except (OSError, ValueError):
+        info = {}
+    if result.returncode:
+        why = '; '.join(f"{a['provider']} {a.get('reason')}: {a.get('detail', '')[:120]}" for a in info.get('attempts', []))
+        raise RuntimeError(f'{role} failed on every provider ({why or "no meta"})')
+    return result.stdout.strip(), info
+
+
+def first_json(text):
+    start, end = text.find('{'), text.rfind('}')
+    if start < 0 or end < start:
+        raise ValueError('no JSON object in the reply')
+    return json.loads(text[start:end + 1])
+
+
+def gather_prompt(current, today):
+    roster = ', '.join(m['id'] for m in current['models'])
+    cells = ', '.join(f"{c['model']}-{c['effort']}" for c in current['effort_ladder'])
+    return f"""You gather candidate facts for a model roster. Today is {today}. The roster was last checked {current['as_of']}.
+Current roster ids: {roster}.
+Current effort ladder cells: {cells}.
+
+Use web search and fetch the CURRENT official pages. Starting points (find the exact pages, including any per-model what's-new pages linked from the overview):
+{chr(10).join('- ' + u for u in START_URLS)}
+- Artificial Analysis: https://artificialanalysis.ai/models/<slug> for each roster model, and for each Claude model at each effort level (slugs look like claude-opus-5-5-low, -medium, -high, -xhigh; the bare slug is max). Record AA Intelligence Index score, cost to run the index per task, and time to first token (TTFT, which includes thinking), with the index version.
+- Any new Claude, GPT, Haiku or Fable model released since {current['as_of']} that is not in the roster.
+- Anthropic's optimizing-for-cost-and-intelligence page for SWE-bench Pro cost per solved task by effort.
+
+Return ONLY one JSON object, no prose, no code fence:
+{{"facts":[{{"subject":"<roster id or new model id>","field":"AA|TB4|cost|released|ladder_cell|swe_bench_pro|new_model|other","effort":"low|medium|high|xhigh|max|null","value":<number or string>,"cost_usd":<number or null>,"ttft_s":<number or null>,"url":"https://...","quote":"<short verbatim quote, under 200 chars>"}}]}}
+Every fact needs a real URL you actually opened and a quote from it. Do not guess. Omit what you could not find."""
+
+
+def verify_prompt(today):
+    return f"""You maintain context/models.json. Today is {today}. Files in the current directory:
+- current.json: the file as it stands.
+- candidates.json: facts gathered by another agent (each with url and quote). Treat them as unverified claims.
+
+Do this:
+1. For every candidate fact that differs from current.json, or that is new, open its URL with WebFetch and confirm the number against the page. Drop what the page does not support. Also spot-check a few unchanged AA numbers in current.json against their URLs.
+2. Resolve conflicts: prefer the vendor's own page (Anthropic, OpenAI), then Artificial Analysis, then anything else. Put each disagreement you found, with both URLs, in the notes.
+3. Recompute effort_ladder. Balance intelligence, speed and cost; never cost alone. Quota weighting per model is unpublished, so $ is only an API-price proxy. From all measured AA (model, effort) cells (score, cost_usd per index task, ttft_s = AA time to first token including thinking), keep the cells not dominated on all three axes: a cell is dominated only if another has score >=, cost <= and ttft_s <=, with at least one strictly better. Order by increasing cost_usd. Each cell: model (roster id), effort, score, cost_usd, ttft_s, benchmark (name and version), source (the AA page URL). Keep current cells you could not re-verify but did not contradict. Keep the quota_note field. The ladder is the Claude effort ladder: include only Claude (anthropic) models; other vendors' AA numbers go in their roster scores (AA), not the ladder. codex_ladder holds the same cells for the Codex-subscription models (Sol, Luna, Astra, every measured effort, ttft_s may be null; keep a cell's ttft_estimate_s and ttft_estimate while its ttft_s stays null, and drop both once AA publishes a measured ttft_s); re-verify it the same way, but never prune it for dominance: the compute page plots all of it. Round ttft_s to whole seconds and cost_usd to cents.
+4. Write candidate.json: the same schema and key order as current.json, with as_of "{today}". Rules: every number needs a source URL (per model `sources` map with a key for each score and for cost when it has digits; ladder and swe_bench_pro cells carry a source). Change only what verified evidence supports; change nothing else; keep roles, notes and cost wording unless a verified fact contradicts them. Add a new model only if verified released, with role "new, unassessed". Remove a model only if verified discontinued. No em dashes or middle dots in any string.
+5. Reply with ONLY a JSON object: {{"notes":["..."],"unverified":["..."]}}."""
+
+
+def run_pipeline(current, today, work):
+    say('gather: asking the gather role for candidate facts')
+    (work / 'current.json').write_text(dump(current))
+    text, gmeta = agent('gather', gather_prompt(current, today), work, True, 'gather', 'workspace-write')
+    candidates = first_json(text)
+    if not isinstance(candidates.get('facts'), list):
+        raise RuntimeError('gather returned no facts list')
+    (work / 'candidates.json').write_text(json.dumps(candidates, indent=1, ensure_ascii=False))
+    say(f"gather: {len(candidates['facts'])} facts via {gmeta.get('provider')}")
+    say('verify: asking the verify role to check each fact and write candidate.json')
+    text, vmeta = agent('verify', verify_prompt(today), work, True, 'verify', 'workspace-write')
+    try:
+        notes = first_json(text)
+    except ValueError:
+        notes = {'notes': [text[:500]]}
+    cfile = work / 'candidate.json'
+    if not cfile.exists():
+        raise RuntimeError('verify did not write candidate.json')
+    return json.loads(cfile.read_text()), notes, gmeta, vmeta
+
+
+# --------------------------------------------------------------------------- git
+
+def git(repo, *args, check=True):
+    return subprocess.run(['git', '-C', str(repo), *args], capture_output=True, text=True, check=check)
+
+
+def commit_and_push(repo, models_path, message):
+    rel = str(models_path.relative_to(repo))
+    git(repo, 'add', '--', rel)
+    git(repo, 'commit', '-m', message, '--', rel)  # path-limited: other sessions' dirty files stay untouched
+    commit = git(repo, 'rev-parse', '--short', 'HEAD').stdout.strip()
+    push = git(repo, 'push', check=False)
+    if push.returncode:
+        git(repo, '-c', 'rebase.autoStash=true', 'pull', '--rebase')
+        git(repo, 'push')
+    return commit
+
+
+def provider_line(*metas):
+    return ', '.join(f"{n} {m.get('provider')}" for n, m in zip(('gather', 'verify'), metas) if m)
+
+
+def usage_line(*metas):
+    out = []
+    for name, m in zip(('gather', 'verify'), metas):
+        u = (m or {}).get('usage') or {}
+        out.append(f"{name} {m.get('provider') if m else '-'} in {u.get('input', 0)} out {u.get('output', 0)}"
+                   + (f" ${u['cost_usd']:.3f}" if u.get('cost_usd') is not None else ''))
+    return '; '.join(out)
+
+
+# --------------------------------------------------------------------------- main
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--dry-run', action='store_true', help='no models.json write, commit or page; print the diff')
+    parser.add_argument('--candidate-file', help='skip gather/verify; guard and apply this candidate')
+    parser.add_argument('--repo', default=str(REPO))
+    parser.add_argument('--today', help=argparse.SUPPRESS)
+    args = parser.parse_args(argv)
+    repo = Path(args.repo)
+    models_path = repo / 'context/models.json'
+    today = dt.date.fromisoformat(args.today) if args.today else dt.date.today()
+    dry = args.dry_run
+    current = json.loads(models_path.read_text())
+    gmeta = vmeta = None
+    notes = {}
+    work = Path(tempfile.mkdtemp(prefix='refresh-models-'))
+
+    def fail(msg):
+        say(f'FAILED: {msg}')
+        if not dry:
+            notify('error', f'models refresh failed, models.json untouched: {msg}'[:300])
+        return 1
+
+    try:
+        if args.candidate_file:
+            candidate = json.loads(Path(args.candidate_file).read_text())
+        else:
+            candidate, notes, gmeta, vmeta = run_pipeline(current, today, work)
+    except (RuntimeError, ValueError, OSError) as error:
+        return fail(str(error))
+    errors = validate(normalise(candidate), today)
+    if errors:
+        say('validation errors:\n- ' + '\n- '.join(errors))
+        (work / 'rejected.json').write_text(dump(candidate))
+        return fail(f'{len(errors)} schema errors, first: {errors[0]} (rejected candidate: {work}/rejected.json)')
+    d = diff(current, candidate)
+    say(d['text'] or 'no diff at all')
+    say('summary: ' + summarise(d))
+    for note in (notes.get('notes') or []) + [f'unverified: {u}' for u in notes.get('unverified') or []]:
+        say(f'note: {note}')
+    say('usage: ' + usage_line(gmeta, vmeta))
+    via = provider_line(gmeta, vmeta)
+    if d['needs_review']:
+        target = CACHE / 'models.candidate.json'
+        why = (f"{len(d['big_moves'])} score(s) moved >= {REVIEW_SCORE_DELTA}: " + ', '.join(f'{n} {a:g}->{b:g}' for n, a, b in d['big_moves'])
+               if d['big_moves'] else f"{d['models_touched']} models changed (limit {REVIEW_MODELS})")
+        say(f'REVIEW NEEDED: {why}')
+        if dry:
+            say(f'dry run: would write {target} and page the operator')
+            return 0
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(dump(candidate))
+        notify('warn', f'models refresh needs review, not committed ({via}): {why}. Candidate at {target}')
+        return 0
+    if not d['material']:
+        say('no change (only as_of moves)' if candidate != current else 'no change')
+    if dry:
+        say('dry run: nothing written, committed or paged')
+        return 0
+    models_path.write_text(dump(candidate))
+    if not d['material']:
+        message = f'Refresh model roster: verified unchanged as of {today}'
+    else:
+        message = f'Refresh model roster and effort ladder: {summarise(d)}'[:200]
+    try:
+        commit = commit_and_push(repo, models_path, message + f'\n\nAutomated by bin/refresh-models ({via}).')
+    except subprocess.CalledProcessError as error:
+        models_path.write_text(dump(current))
+        return fail(f'git failed: {(error.stderr or "")[-200:]}')
+    say(f'committed {commit} and pushed')
+    if d['material']:
+        notify('info', f'models refreshed ({via}): {summarise(d)} [{commit}]')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.gabriel.ae-dash</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/python3.12</string>
+    <string>/Users/gabriel/Desktop/genv/dash/app.py</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/gabriel/Desktop/genv/dash</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/ae-dash.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/ae-dash.err</string>
+</dict>
+</plist>

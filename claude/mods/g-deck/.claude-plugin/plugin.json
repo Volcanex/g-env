@@ -1,0 +1,1 @@
+{ "name": "g-deck", "version": "0.1.0", "description": "Agent deck: every running subagent and Sol job with its grade, at a glance", "types": "./types/index.d.ts" }

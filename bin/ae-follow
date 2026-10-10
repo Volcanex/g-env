@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# exec-on-workspace-change callback: decide what a focus change that came from
+# OUTSIDE the switcher should mean.
+#
+# Clicking a Dock icon (or ⌘-tab, or a notification) focuses whatever window the
+# app already has, wherever it lives, and AeroSpace follows it. Two different
+# things can be wanted there, and which one depends on where the app's windows
+# are:
+#
+#   1. The app already has a window on the workspace you are ON. You wanted that
+#      window raised (⌘` semantics), not to be moved somewhere else. Focus it
+#      and stay put. Without this, clicking Chrome in the Dock while looking at
+#      a Chrome window teleports you to whichever workspace macOS happened to
+#      pick, which is usually the one you were on hours ago.
+#
+#   2. The app has no window here. Then travelling is right, but AeroSpace
+#      moves only the monitor the window is on, so you land half-moved: the app
+#      you asked for on one screen, the workspace you left on the other.
+#      ae-switch already knows how to move everything as one, so route the event
+#      into the switcher rather than reimplementing it.
+#
+# Observed before (1) existed: a Dock click on Obsidian took the main monitor to
+# ws3 and left the secondary on 8x.
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
+
+ws="${AEROSPACE_FOCUSED_WORKSPACE:-}"
+# N and Nx are two halves of one logical workspace; ae-switch takes the number.
+ws="${ws%x}"
+[[ "$ws" =~ ^[0-9]+$ ]] || exit 0
+
+# Don't chase our own tail. A single ae-switch changes the workspace several
+# times (raise the far half, focus the terminal, settle) and every one of
+# those fires this callback. The lock holds the running switch's pid rather than
+# just existing, so a switch that gets killed can't leave a file behind that
+# silences Dock-following for the rest of the session.
+lock=$(cat /tmp/ae-switch.lock 2>/dev/null)
+[[ -n "$lock" ]] && kill -0 "$lock" 2>/dev/null && exit 0
+
+# Already the workspace the switcher last aimed at: this is the tail of a switch
+# that has already finished, not somewhere new to go.
+here=$(cat "$HOME/.ae-current" 2>/dev/null)
+[[ "$ws" == "$here" ]] && exit 0
+
+# One query answers everything below: the app name for case (1), and the window
+# id to land on if we travel.
+IFS='|' read -r focused_id focused_app < <(
+  aerospace list-windows --focused --format '%{window-id}|%{app-name}' 2>/dev/null
+  echo
+)
+
+# Travelling means handing the event to ae-switch, but ae-switch focuses the
+# destination's terminal tab unless that workspace's focus memory names another
+# window, so the app you clicked in the Dock ends up on screen with the terminal
+# in front of it and holding the keyboard. Write the window we are travelling
+# FOR into that memory first, and the switch lands on it.
+travel() {
+  [[ -n "$focused_id" ]] && printf '%s\n' "$focused_id" > "$HOME/.ae-focus-$ws"
+  exec ae-switch "$ws"
+}
+
+[[ "$here" =~ ^[0-9]+$ ]] || travel
+[[ -n "$focused_app" ]] || travel
+
+# Case (1): does the app we just focused have a window on the workspace we were
+# already on? Prefer a window on the half the focus is not being dragged off,
+# but any window of the app on either half beats travelling.
+
+candidate=$(
+  aerospace list-windows --all --format '%{window-id}|%{workspace}|%{app-name}' 2>/dev/null |
+    awk -F'|' -v app="$focused_app" -v w="$here" -v skip="$focused_id" '
+      $3 == app && $1 != skip && ($2 == w || $2 == w"x") { print $1; exit }'
+)
+
+if [[ -n "$candidate" ]]; then
+  # Stay. Focusing the local window pulls the workspace back with it, and the
+  # lock keeps this callback from treating that as another outside event.
+  echo $$ > /tmp/ae-switch.lock
+  trap 'rm -f /tmp/ae-switch.lock' EXIT
+  aerospace focus --window-id "$candidate" 2>/dev/null
+  exit 0
+fi
+
+# Case (2): nothing of this app here.
+#
+# A browser is the exception to travelling. Asking for Chrome means "give me a
+# window where I am", not "take me to the window I left open on ws3 this
+# morning", and macOS picks that old window for you, so the Dock icon became a
+# one-way trip away from the workspace you were working on. Go back and open one
+# here instead, in this workspace's profile. `exec` keeps our pid, so the lock
+# taken here is the same one ae-chrome writes, so it inherits the guard rather
+# than racing it.
+if [[ "$focused_app" == "Google Chrome" ]]; then
+  echo $$ > /tmp/ae-switch.lock
+  trap 'rm -f /tmp/ae-switch.lock' EXIT
+  aerospace workspace "$here" >/dev/null 2>&1
+  exec ae-chrome
+fi
+
+travel

@@ -1,0 +1,3 @@
+# Framework default: no standing approvals. Codex appends the commands you
+# approve here. An instance replaces this whole file with its
+# env/codex/rules/default.rules; see bootstrap-base.sh.

@@ -1,0 +1,3 @@
+# Framework default: no identity and no credential helper. An instance replaces
+# this whole file with its env/git/gitconfig (identity, credential helper,
+# safe.directory list); see bootstrap-base.sh.

@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+"""Pick a model and effort from job stakes and current quota prices."""
+import argparse
+import json
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'context'))
+import value
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--role')
+    parser.add_argument('--stakes', choices=value.STAKES, default='normal')
+    parser.add_argument('--allow-claude', action='store_true')
+    parser.add_argument('--claude-only', action='store_true')
+    parser.add_argument('--domain', choices=value.domains())
+    parser.add_argument('--json', action='store_true')
+    parser.add_argument('--grid', action='store_true')
+    args = parser.parse_args(argv)
+    if not args.grid and not args.role:
+        parser.error('--role or --grid is required')
+    try:
+        if args.grid:
+            data = value.snapshot()
+            if args.json:
+                print(json.dumps(data))
+            else:
+                print(f"{'role':8} " + ' '.join(f'{s:14}' for s in data['stakes']).rstrip())
+                for role, cells in data['grid'].items():
+                    print(f'{role:8} ' + ' '.join(f'{(i or "unavailable"):14}' for i in cells.values()).rstrip())
+        else:
+            data = value.pick(args.role, args.stakes, args.allow_claude, args.claude_only, domain=args.domain)
+            if args.json:
+                print(json.dumps(data))
+            else:
+                i, p = data['pick'], data['prices']
+                costs = ', '.join(f"{name.title()} price {p[name]['lambda']:.1f} ({p[name]['temp'].title()})"
+                                  for name in ('codex', 'claude'))
+                print(f"{args.role}{', ' + args.domain if args.domain else ''}, {data['stakes']}: {i['id']} (AA {i['q']:g}, {i['provider']}, "
+                      f"{i['c']:.1f}x a normal job). {costs}.")
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        parser.error(str(error))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

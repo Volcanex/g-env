@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""Run a g-agent-run job detached and wait for it in chunks a tool call can survive.
+
+    g-agent-call --role ROLE --label "what it is" [--workdir D] [--block] [--sandbox S] < brief
+    g-agent-call --wait JOBDIR
+
+This is how Claude sessions run Sol and Luna jobs, as background Bash calls (the Haiku
+forwarder agents were dropped on 2026-10-05: they cost Claude tokens and garbled reports).
+`--block` waits until the job ends, for a run_in_background call that notifies on exit;
+without it the wait is chunked, because a foreground Bash call is capped at ten minutes.
+The brief is read from stdin and the job lives in ~/.cache/genv/agent-jobs/<id>/. Prints
+the answer when the job ends inside the wait window (default 570s), otherwise one line:
+`STILL RUNNING: g-agent-call --wait <jobdir>`. Exit codes follow g-agent-run.
+"""
+import argparse
+import datetime as dt
+import os
+import secrets
+import shlex
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+JOBS = Path(os.environ.get('G_AGENT_JOBS', Path.home() / '.cache/genv/agent-jobs'))
+# What the Claude agent definitions used to say, for a model that never sees them.
+# Every tool call resends ~16K tokens of Codex prompt, so the batching line is the cheapest saving.
+BATCH = (' Batch your reads: gather what you need in as few shell commands as possible (several files, '
+         'greps or sed ranges per command) rather than one small command per step.')
+PREAMBLES = {
+    'explore': 'You are a read-only exploration worker. Never edit, write or mutate anything; shell is for '
+               'inspection only. Search broadly, read only what is relevant, and answer with conclusions and '
+               'file:line locations, not file dumps. State uncertainties and the next check that would settle them.' + BATCH,
+    'research': 'You are a research worker. Use current primary sources: official docs, maintainer repositories, '
+                'papers. Open sources rather than trusting snippets, check versions and dates, and never put private '
+                'code or data in a search. Return the answer, source URLs with dates or versions, constraints and '
+                'uncertainties. Separate measured facts from vendor claims and your inference. Edit nothing.' + BATCH,
+    'build': 'You are an implementation worker. Do exactly the task; no scope creep or unrequested features. Read '
+             'the nearest CLAUDE.md or AGENTS.md and follow the existing conventions. Verify before claiming done: '
+             'run the relevant tests or build and show the result. Do not commit or push unless the task says so. '
+             'Finish with a terse report: files changed, verification output, assumptions and blockers.' + BATCH,
+}
+
+
+def start(args):
+    brief = sys.stdin.read()
+    if not brief.strip():
+        print('g-agent-call: empty brief on stdin', file=sys.stderr)
+        sys.exit(2)
+    job = JOBS / f"{dt.datetime.now():%Y%m%d-%H%M%S}-{args.role}-{secrets.token_hex(3)}"
+    job.mkdir(parents=True)
+    preamble = PREAMBLES.get(args.role)
+    (job / 'brief.txt').write_text(f'{preamble}\n\nTask:\n{brief}' if preamble else brief)
+    argv = [str(HERE / 'g-agent-run'), '--role', args.role, '--prompt-file', str(job / 'brief.txt'),
+            '--workdir', str(Path(args.workdir).resolve()), '--out', str(job / 'out.txt'), '--meta', str(job / 'meta.json')]
+    argv += ['--label', args.label] if args.label else []
+    argv += ['--web'] if args.web else []
+    argv += ['--allow-claude'] if args.allow_claude else []
+    argv += ['--stakes', args.stakes]
+    argv += ['--claude-only'] if args.claude_only else []
+    argv += ['--domain', args.domain] if getattr(args, 'domain', None) else []
+    argv += ['--sandbox', args.sandbox] if args.sandbox else []
+    # The exit code lands in a file because the waiting process is not the parent.
+    shell = f"{shlex.join(argv)} 2> {shlex.quote(str(job / 'err.txt'))}; echo $? > {shlex.quote(str(job / 'exit'))}"
+    subprocess.Popen(['sh', '-c', shell], cwd=args.workdir, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+    return job
+
+
+def wait(job, seconds):
+    deadline = time.monotonic() + seconds
+    while not (job / 'exit').exists():
+        if time.monotonic() > deadline:
+            print(f'STILL RUNNING: g-agent-call --wait {job}')
+            return 0
+        time.sleep(2)
+    code = int((job / 'exit').read_text().strip() or 1)
+    out = job / 'out.txt'
+    if code == 0 and out.exists():
+        print(out.read_text().rstrip())
+    else:
+        err = (job / 'err.txt').read_text() if (job / 'err.txt').exists() else ''
+        print(f'g-agent-call: job failed (exit {code}): ' + ' '.join(err.split())[-600:])
+    return code
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--role')
+    parser.add_argument('--workdir', default='.')
+    parser.add_argument('--web', action='store_true')
+    parser.add_argument('--allow-claude', action='store_true')
+    parser.add_argument('--stakes', choices=['routine', 'normal', 'important', 'critical'], default='normal')
+    parser.add_argument('--claude-only', action='store_true')
+    parser.add_argument('--domain', choices=['ui'], help='ui work runs on Claude at important stakes or above')
+    parser.add_argument('--sandbox', choices=['read-only', 'workspace-write', 'danger-full-access'])
+    parser.add_argument('--wait', metavar='JOBDIR')
+    parser.add_argument('--window', type=int, default=570)
+    parser.add_argument('--label', default='')
+    parser.add_argument('--block', action='store_true', help='wait until the job ends (for run_in_background)')
+    args = parser.parse_args(argv)
+    if args.block:
+        args.window = 10 ** 9
+    if args.wait:
+        return wait(Path(args.wait), args.window)
+    if not args.role:
+        parser.error('--role or --wait is required')
+    return wait(start(args), args.window)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

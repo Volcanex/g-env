@@ -1,0 +1,61 @@
+#!/usr/bin/env zsh
+# Open a new Chrome window in the workspace's mapped profile, pulled to the current workspace.
+# Profile is read from the instance manifest (workspace.chrome_profile); defaults to "Default".
+ws=$("$HOME"/.local/bin/aerospace list-workspaces --focused 2>/dev/null)
+# Focus usually sits on the terminal, which lives on the twin Nx when a second
+# monitor is attached. Chrome belongs on the plain N (main monitor), and the
+# manifest only knows numeric workspaces, so strip the suffix.
+ws="${ws%x}"
+
+manifest=$("${0:A:h}/g-instance" manifest 2>/dev/null)
+profile=$(python3 -c "
+import json
+try:
+  d=json.load(open('$manifest'))
+  w=next(w for w in d['workspaces'] if str(w['number'])=='$ws')
+  print(w.get('chrome_profile') or 'Default')
+except: print('Default')
+" 2>/dev/null)
+[[ -z "$profile" ]] && profile="Default"
+
+A="$HOME/.local/bin/aerospace"
+chrome_wins() {
+  "$A" list-windows --all --format '%{window-id}|%{app-name}' 2>/dev/null |
+    awk -F'|' '$2=="Google Chrome" {print $1}' | sort
+}
+
+# Hold the switcher's lock for the whole launch. Asking Chrome for a window
+# activates Chrome, and macOS raises an existing window of its own choosing
+# first, on whatever workspace that window lives. That is a workspace change,
+# so ae-follow sees an app with nothing here and travels; the window we are
+# about to open then lands on the workspace we ran away to. The lock says "the
+# workspace changes you are about to see are mine".
+echo $$ > /tmp/ae-switch.lock
+trap 'rm -f /tmp/ae-switch.lock' EXIT
+
+before=$(chrome_wins)
+
+# Direct binary, not `open -na --args`: open drops the args when Chrome is
+# already running, snapping to whatever profile's window exists instead.
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --new-window --profile-directory="$profile" >/dev/null 2>&1 &
+disown
+
+# Wait for the window that did not exist before, by id (up to 3s). "Whichever
+# Chrome window is focused" was the wrong window whenever macOS had raised an
+# older one during the launch. It moved *that* one here, so a window teleported
+# off another workspace and the new one stayed wherever it was born.
+new=""
+for i in {1..30}; do
+  sleep 0.1
+  new=$(comm -13 <(printf '%s\n' "$before" | grep -v '^$') <(chrome_wins) | head -1)
+  [[ -n "$new" ]] && break
+done
+
+if [[ -n "$new" ]]; then
+  "$A" move-node-to-workspace --window-id "$new" "$ws" 2>/dev/null
+  # Focusing it is also the switch back, if an activation dragged us off.
+  "$A" focus --window-id "$new" 2>/dev/null || "$A" workspace "$ws"
+  # Leave it as this workspace's focus memory: it is what you asked for.
+  printf '%s\n' "$new" > "$HOME/.ae-focus-$ws"
+fi

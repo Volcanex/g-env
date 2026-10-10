@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# AeroSpace startup normalizer (after-startup-command): AeroSpace doesn't
+# persist window→workspace assignments, so a (re)start leaves windows scattered.
+# Collect everything onto workspace 1 as the known-good state, then let
+# ae-switch 1 sort the terminal (ws1 tab tiled, hidden siblings parked on P).
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
+
+sleep 1
+
+# Topology first: ae-switch and zshrc both read gcore's manifest, so a stale
+# checkout means every workspace this session opens is wired from old data.
+# Backgrounded: a slow fetch must not delay the window layout. Unthrottled:
+# a login is exactly when the checkout is most likely to be stale.
+#
+# Wait for the network before firing it. This runs ~10s into a boot, which is
+# reliably before DNS is up: every checkout failed with "Could not resolve
+# host: github.com" on the reboot that prompted this, so the one sync that
+# matters most (the one right after a restart) was the one that never
+# happened, and the Mac then ran the whole session on whatever topology it
+# happened to have. The wait is inside the background subshell, so it still
+# costs the window layout nothing.
+(
+  for _ in {1..30}; do
+    nc -z -G 3 github.com 443 >/dev/null 2>&1 && break
+    sleep 2
+  done
+  "$HOME/.local/bin/gsync"
+) >>/tmp/gsync.log 2>&1 &
+
+# Hand the hot workspaces back to the pool. Their binding (see cli/workspace.py)
+# is a choice about one login, not topology, and this is the login. The numbers
+# come from the manifest rather than from globbing the bind files, because that
+# also clears a workspace that has just *become* hot while a stale
+# ~/.ae-workspace-N from its pinned days is still lying around. That file alone
+# would send the next shell to the old host with no project and no picker.
+while read -r n; do
+  [[ -n "$n" ]] || continue
+  rm -f "$HOME/.ae-workspace-$n" "$HOME/.ae-ws-path-$n" "$HOME/.ae-ws-label-$n"
+done < <(python3 -c "
+import json
+try:
+  d=json.load(open('$HOME/Desktop/gcore/manifest.json'))
+  for w in d['workspaces']:
+    if w.get('hot'): print(w['number'])
+except: pass
+" 2>/dev/null)
+
+# ae-fade must be started from here, NOT as a LaunchAgent. It needs Screen
+# Recording, and macOS attributes that to the responsible process: launched by
+# launchd it's judged alone (and denied, silently returning wallpaper-only
+# frames), but launched by AeroSpace it inherits AeroSpace's grant. That also
+# means the permission rides on AeroSpace.app (a stable app) instead of on our
+# binary's code hash, which every recompile would invalidate. So the tick has to
+# be on /Applications/AeroSpace.app: ae-fade's own row in Screen Recording is
+# never consulted from here, and a stale one reads as enabled while every switch
+# flashes wallpaper. `genv fade` restarts it and says which state it got.
+pgrep -x ae-fade >/dev/null || "$HOME/.local/bin/ae-fade" >/dev/null 2>>/tmp/ae-fade.err &
+# Collect everything onto ws1, and put it back into the tiling layout on the way.
+#
+# The re-tile is not belt-and-braces, it is the whole point: AeroSpace detects
+# every already-open window as it starts, and the workspace focused at that
+# moment is 0, whose on-window-detected rule is `layout floating`. So every
+# restart silently floats the entire session. The windows then get swept to ws1
+# here and stay floating forever, because nothing ever re-detects them, which
+# presents as "workspace 1 stopped tiling" with no obvious cause. Windows opened
+# after the restart tile normally, which is what makes it look intermittent.
+#
+# Apps the config floats on purpose stay floating. That list is read back out of
+# the live aerospace.toml rather than copied here, so the two cannot drift; if
+# the pattern can't be found we re-tile everything, which is the state a restart
+# is supposed to produce anyway.
+float_re=$(sed -n "s/^if\.app-name-regex-substring = '(?i)\(.*\)'[[:space:]]*$/\1/p" \
+             "$HOME/.aerospace.toml" 2>/dev/null | head -1)
+while IFS='|' read -r id app; do
+  [[ -z "$id" ]] && continue
+  aerospace move-node-to-workspace --window-id "$id" 1 2>/dev/null
+  if [[ -z "$float_re" ]] || ! grep -qiE "$float_re" <<<"$app"; then
+    aerospace layout tiling --window-id "$id" 2>/dev/null
+  fi
+done < <(aerospace list-windows --all --format '%{window-id}|%{app-name}' 2>/dev/null)
+exec "$HOME/.local/bin/ae-switch" 1

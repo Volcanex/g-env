@@ -1,0 +1,237 @@
+# Aerospace config: Gabriel's environment
+# Workspaces: pinned and hot slots live in gcore/manifest.json (workspaces)
+
+# Handled by the com.gabriel.aerospace LaunchAgent instead: AeroSpace's own
+# start-at-login never actually registers (missing from `sfltool dumpbtm`),
+# likely because the ad-hoc-signed fork build fails Gatekeeper's spctl check.
+start-at-login = false
+
+# On (re)start, collect all windows onto workspace 1, a known-good state after
+# crashes/restarts, since AeroSpace doesn't persist window→workspace mapping.
+after-startup-command = ['exec-and-forget /Users/gabriel/.local/bin/ae-startup']
+
+# Edge-to-edge: no outer gaps, hairline inner gap. Accordion shows a thin slit
+# of the windows behind.
+# NOTE: must stay up here, before the first [table] header. TOML attaches a
+# bare key to whatever table most recently opened, so this previously sat
+# inside [workspace-to-monitor-force-assignment] (no [table] header in
+# between) and silently did nothing: it became a bogus force-assignment entry
+# ("accordion-padding" as a phantom workspace name) instead of a global
+# setting, so the default padding was used instead of this value.
+accordion-padding = 10
+
+# Handle a workspace change that came from outside the switcher: a Dock click,
+# ⌘-tab, a notification stealing focus. Two cases, both wrong by default: if the
+# app already has a window here, macOS may still focus one somewhere else and
+# teleport you away from the window you were looking at; if it doesn't, AeroSpace
+# moves only the monitor that window is on and you land half-moved. ae-follow
+# picks between staying (focus the local window, ⌘` semantics) and travelling
+# (route into ae-switch, which moves both halves and selects the terminal tab).
+# It guards against its own recursion (see bin/ae-follow).
+exec-on-workspace-change = ['/Users/gabriel/.local/bin/ae-follow']
+
+# Sidecar hands finger gestures to whatever is under the *pointer*. Fingers
+# never move the cursor, only the Pencil does. So a two-finger scroll on the
+# iPad lands wherever the mouse was last left, which is why reading a terminal
+# over there needed a click on it first. Carry the pointer across with the
+# focused monitor instead. Monitor-level, not `on-focus-changed` + window-lazy-
+# center: that one yanks the cursor on every focus change on the laptop too.
+on-focused-monitor-changed = ['move-mouse monitor-lazy-center']
+
+# Each Ghostty tab's hidden window lives permanently on its own workspace
+# (see ae-switch): no parking workspace, windows never travel.
+
+# ── Multi-monitor twins (dormant until a second monitor is connected) ────────
+# Every workspace N has a twin Nx pinned to the secondary monitor; ae-switch
+# flips both on cmd+N, so both screens change together: "one workspace across
+# two monitors" as an experience. With a second monitor attached the terminal
+# tab is homed on Nx, i.e. it opens on the secondary screen and everything else
+# stays on main. With one monitor the twins are empty and invisible, and the
+# terminal falls back to plain N (ae-cycle-ws folds twins into their number).
+[workspace-to-monitor-force-assignment]
+1 = 'main'
+2 = 'main'
+3 = 'main'
+4 = 'main'
+5 = 'main'
+6 = 'main'
+7 = 'main'
+8 = 'main'
+9 = 'main'
+0 = 'main'
+'1x' = 'secondary'
+'2x' = 'secondary'
+'3x' = 'secondary'
+'4x' = 'secondary'
+'5x' = 'secondary'
+'6x' = 'secondary'
+'7x' = 'secondary'
+'8x' = 'secondary'
+'9x' = 'secondary'
+'0x' = 'secondary'
+
+[gaps]
+inner.horizontal = 2
+inner.vertical   = 2
+outer.left       = 0
+outer.right      = 0
+outer.top        = 0
+outer.bottom     = 0
+
+[mode.main.binding]
+# Switch workspace (opens Ghostty if empty)
+cmd-1 = 'exec-and-forget /Users/gabriel/.local/bin/ae-switch 1'
+cmd-2 = 'exec-and-forget /Users/gabriel/.local/bin/ae-switch 2'
+cmd-3 = 'exec-and-forget /Users/gabriel/.local/bin/ae-switch 3'
+cmd-4 = 'exec-and-forget /Users/gabriel/.local/bin/ae-switch 4'
+cmd-5 = 'exec-and-forget /Users/gabriel/.local/bin/ae-switch 5'
+cmd-6 = 'exec-and-forget /Users/gabriel/.local/bin/ae-switch 6'
+cmd-7 = 'exec-and-forget /Users/gabriel/.local/bin/ae-switch 7'
+cmd-8 = 'exec-and-forget /Users/gabriel/.local/bin/ae-switch 8'
+cmd-9 = 'exec-and-forget /Users/gabriel/.local/bin/ae-switch 9'
+cmd-0 = 'exec-and-forget /Users/gabriel/.local/bin/ae-switch 0'
+
+# Move focused window to workspace (cmd+shift+number)
+# Note: requires macOS screenshot shortcuts remapped off cmd+shift+4/5 (System Settings → Keyboard → Screenshots)
+cmd-shift-1 = ['move-node-to-workspace 1', 'workspace 1']
+cmd-shift-2 = ['move-node-to-workspace 2', 'workspace 2']
+cmd-shift-3 = ['move-node-to-workspace 3', 'workspace 3']
+cmd-shift-4 = ['move-node-to-workspace 4', 'workspace 4']
+cmd-shift-5 = ['move-node-to-workspace 5', 'workspace 5']
+cmd-shift-6 = ['move-node-to-workspace 6', 'workspace 6']
+cmd-shift-7 = ['move-node-to-workspace 7', 'workspace 7']
+cmd-shift-8 = ['move-node-to-workspace 8', 'workspace 8']
+cmd-shift-9 = ['move-node-to-workspace 9', 'workspace 9']
+cmd-shift-0 = ['move-node-to-workspace 0', 'workspace 0']
+
+# Cycle through non-empty workspaces (cmd+\ / cmd+')
+cmd-backslash = 'exec-and-forget /Users/gabriel/.local/bin/ae-cycle-ws next'
+cmd-quote     = 'exec-and-forget /Users/gabriel/.local/bin/ae-cycle-ws prev'
+# Trial alternative. NOTE: steals global shortcuts (cmd+arrows: browser
+# back/forward + text line navigation).
+cmd-left  = 'exec-and-forget /Users/gabriel/.local/bin/ae-cycle-ws prev'
+cmd-right = 'exec-and-forget /Users/gabriel/.local/bin/ae-cycle-ws next'
+
+# Focus between tiled windows (cmd+[ / cmd+])
+# --ignore-floating: hidden Ghostty tab-siblings float on every workspace, and
+# focusing one would reveal its tab, so skip all floating windows when navigating.
+#
+# --boundaries all-monitors-outer-frame: focus crosses the screen edge. A switch
+# ends with the keyboard on the terminal, which lives on the secondary screen
+# (the iPad), and the workspace's other windows are on the Mac. So with the
+# default `workspace` boundary the terminal is a dead end and reaching those
+# windows meant clicking one first. Crossing costs one keypress and typing
+# still lands in the terminal by default, which is why focus is not simply
+# parked on the Mac window at the end of a switch.
+cmd-leftSquareBracket  = 'focus --ignore-floating --boundaries all-monitors-outer-frame left'
+cmd-rightSquareBracket = 'focus --ignore-floating --boundaries all-monitors-outer-frame right'
+
+# Send the focused window to the other screen.
+# With the on-window-detected rule below, a window can no longer be *born* on
+# the secondary screen, so this is how anything deliberately gets there.
+cmd-shift-backslash = 'move-node-to-monitor --focus-follows-window next'
+
+# Move window within workspace (cmd+shift+, / cmd+shift+.)
+cmd-shift-comma  = 'move left'
+cmd-shift-period = 'move right'
+
+# Resize
+alt-shift-minus = 'resize smart -50'
+alt-shift-equal = 'resize smart +50'
+
+# Layout: toggle tiled ↔ accordion (stacked, one window at a time)
+cmd-x = 'layout tiles accordion'
+
+# Fullscreen the focused window WITHOUT macOS's native fullscreen, which moves
+# the window to its own Space where AeroSpace can't manage it (the window drops
+# out of its workspace and the layout is left with a hole). This fills the
+# monitor in place instead, so it works on the terminal on either screen (the
+# iPad or the Mac) and toggles straight back. Use this, not the green button.
+# Ghostty's own ⌘⌃F can't do the job here: the terminal tab is a *tiled* window,
+# so AeroSpace re-tiles it back on the next refresh.
+alt-shift-f = 'fullscreen --no-outer-gaps'
+
+# Float / tile toggle
+alt-shift-space = 'layout floating tiling'
+
+# Open Chrome in current workspace
+cmd-b = 'exec-and-forget /Users/gabriel/.local/bin/ae-chrome'
+
+# Clipboard image -> this workspace's host, path back on the clipboard to ⌘V.
+# alt-shift-* is the environment-verb family; ⌘⇧V belongs to the apps.
+alt-shift-v = 'exec-and-forget /Users/gabriel/.local/bin/ae-paste'
+
+# Reload config
+alt-shift-semicolon = 'reload-config'
+
+# Restart ae-fade: `genv fade`.
+# The only way to start it with AeroSpace as its parent without restarting
+# AeroSpace itself: `exec-and-forget` is config-only (the CLI rejects the
+# subcommand), so `genv fade` reaches it through `aerospace trigger-binding
+# --mode main alt-shift-r`. Parentage is the whole point: Screen Recording is
+# granted to the responsible process, see bin/CLAUDE.md.
+alt-shift-r = 'exec-and-forget /Users/gabriel/.local/bin/ae-fade >/dev/null 2>>/tmp/ae-fade.err'
+
+# ── Tiling off: workspace 0's freeform behaviour, everywhere ─────────────────
+# Toggled by `genv tiling` (cli/env.py rewrites these two lines and reloads).
+# Uncommented = every new window floats, i.e. normal Mac window behaviour, while
+# workspaces, the ⌘N switching and the terminal's screen-stickiness all keep
+# working, which is the part of AeroSpace that earns its keep. The terminal tab
+# is exempt: ae-switch re-asserts `layout tiling` on it so it still fills its
+# workspace edge-to-edge.
+# TILING-OFF
+# [[on-window-detected]]
+# check-further-callbacks = true
+# run = 'layout floating'
+
+# ── Workspace 0: freeform / floating (normal Mac behaviour) ──────────────────
+[[on-window-detected]]
+if.workspace = '0'
+run = 'layout floating'
+
+# The twin of 0 wants the same freeform layout, but still has to fall through to
+# the secondary-screen rule at the bottom, or a window opened on 0 while the
+# iPad is attached would float there and stay there.
+[[on-window-detected]]
+if.workspace = '0x'
+check-further-callbacks = true
+run = 'layout floating'
+
+# ── Fallback: float utility / comms windows so they surface on top of tiles ──
+# AeroSpace already sends unmatched new windows to the active workspace; the
+# remaining "lost window" case is a small utility app getting buried inside the
+# tiling grid on a busy workspace. Floating these keeps them on top and findable.
+#
+# NOTE: ae-startup reads this app list back out of this file (first
+# `if.app-name-regex-substring` line wins) to know which windows to leave
+# floating when it re-tiles the session. Keep it the first such rule.
+[[on-window-detected]]
+if.app-name-regex-substring = '(?i)(System Settings|Preview|iPhone Mirroring|Calculator|Activity Monitor|Spotify|Notes|Messages|Reminders|Calendar)'
+check-further-callbacks = true
+run = 'layout floating'
+
+# ── The terminal is the one thing that belongs on the second screen ──────────
+# ae-switch creates each workspace's Ghostty tab *on* the twin (that's what
+# homes the terminal on the iPad), so Ghostty must not be caught by the rule
+# below. Matching here and not continuing is what exempts it; `layout tiling`
+# is the same assertion ae-switch makes on every switch, and is what keeps the
+# terminal filling its workspace while tiling is off.
+[[on-window-detected]]
+if.app-name-regex-substring = '(?i)^ghostty$'
+run = 'layout tiling'
+
+# ── Nothing else is born on the second screen ───────────────────────────────
+# A new window opens on whatever workspace has focus, and a switch deliberately
+# ends with focus on the terminal, which lives on the secondary screen. So
+# every window you opened appeared on the iPad, on top of the terminal, and the
+# ones that knew better (ae-chrome) then dragged themselves back across a
+# frame later. Keyed on the monitor rather than on the `Nx` names so it holds
+# whatever the twin is called and whichever half the terminal is homed on.
+[[on-window-detected]]
+if = 'test %{monitor-is-main} = false'
+run = 'move-node-to-monitor --focus-follows-window main'
+
+# Ghostty windows are NOT routed by workspace here: the single-window model has
+# ae-switch move each tab window (by window-id) to the workspace it belongs to,
+# one tab per workspace (tab ids tracked in ~/.ae-tab-<ws>). The rule above only
+# keeps them out of the secondary-screen sweep.
