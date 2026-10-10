@@ -86,5 +86,6 @@ Shared context, migration and bounded retrieval are documented in [context/READM
 
 ## License
 
-[PolyForm Noncommercial 1.0.0](LICENSE). Vendored code keeps its own license: see
-[THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).
+Copyright (C) 2026 Gabriel Penman. Licensed under the
+[GNU Affero General Public License v3.0 only](LICENSE). Vendored code keeps its
+own license: see [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).

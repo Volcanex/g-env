@@ -57,7 +57,7 @@ call before adding their platform-specific configs.
   Ignored files and dependency trees are excluded. Extra roots can be supplied
   with `--discover-root`.
 - `scripts/vendor-skills.sh`: re-vendor the pinned upstream skills into `skills/`. Run manually to update.
-- `LICENSE` (PolyForm Noncommercial 1.0.0) and `THIRD_PARTY_NOTICES` for the
+- `LICENSE` (GNU AGPL v3.0 only) and `THIRD_PARTY_NOTICES` for the
   vendored code that keeps its own license.
 
 ## Instance contract
