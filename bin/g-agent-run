@@ -9,8 +9,10 @@ Prints the model's final message on stdout (and to --out). Providers come from
 context/value.py when providers.json has value rules, with each point's effort;
 the old provider order and effort per role are the fallback. A provider is skipped or failed
 over on: a missing CLI, non-zero exit, an auth/quota/usage-limit message, a
-timeout, empty output, or its quota in ~/.cache/genv/compute-pace.json being below
-the floor. Every attempt is logged to stderr and ~/.cache/genv/g-agent-run.jsonl.
+timeout, empty output, a non-answer, a sandbox failure, or its quota being below
+the floor in ~/.cache/genv/compute-pace.json. Short fragments, blocked error reports
+and refusals without a deliverable are non-answers. Short verdicts are accepted.
+Every attempt is logged to stderr and ~/.cache/genv/g-agent-run.jsonl.
 --meta F writes {provider, model, attempts, usage} for the caller.
 --tools lets the job run Bash in --workdir (a role can also set "tools": true in providers.json).
 With --sandbox workspace-write it may also edit files and, on Codex, reach the network; with
@@ -19,13 +21,14 @@ rights to files another user owns, so a repo on h owned by the workspace user fa
 "bwrap: Can't mkdir <workdir>/.agents: Permission denied"; the fix is an ACL for root
 (`setfacl -R -m u:root:rwX -m d:u:root:rwX <repo>`, applied on h 2026-10-05, with a default
 ACL on the workspace for new repos), and the job reports reason "sandbox" with that hint.
+Failed uid map, newuidmap or setgroups setup also reports "sandbox" with the cause.
 danger-full-access is what Claude's tools mode already amounts to. Claude gets Read,Bash(+Write,Edit); Codex gets
 `exec --sandbox` plus network_access=true when writable. --connectors (implies --claude-only) keeps the
 account's MCP connectors for jobs that cannot work without them; the servers listed under "connectors" in providers.json are allowed (an
 unlisted connector is denied, because the permission mode never asks). Codex has
 none, so such a job falling over to Codex must report failure rather than guess.
 The prompt always goes over stdin, so its length is not limited by argv.
-Exit 0 on success, 3 when every provider failed, 2 on bad usage.
+Exit 0 when a final answer passes these checks, 3 when every provider failed, 2 on bad usage.
 
 Adding a vendor: write `def gemini(model, effort, web, sandbox, workdir, prompt, timeout)`
 returning (argv, stdin_text, parse) where parse(stdout, tmpfile) -> (text, usage), put it
@@ -62,6 +65,40 @@ AUTH_QUOTA = re.compile(r"usage limit|hit your .*limit|rate.?limit|quota|credit 
                         r"unauthori[sz]ed|\b401\b|\b403\b|\b429\b|not logged in|please (run )?/?log ?in|"
                         r"login required|invalid api key|oauth token|token has expired|account.*(suspend|disabled|banned)|"
                         r"overloaded|subscription", re.I)
+UID_MAP = re.compile(r"(?:bwrap:(?=[^\n]*(?:uid[ _-]?map|newuidmap|setgroups))|(?:newuidmap|setgroups):)"
+                     r"(?=[^\n]*(?:fail|denied|not permitted|error))[^\n]*", re.I)
+REFUSAL = re.compile(r"^(?:sorry[,.:]?\s+|unfortunately[,.:]?\s+)?(?:"
+                     r"i (?:cannot|can['’]t|could not|couldn['’]t|am unable to|will not|won['’]t) "
+                     r"(?:access|read|run|execute|complete|implement|proceed|help|provide|perform|do|assist)\b|"
+                     r"i['’]m unable to\b|i need you to\b|"
+                     r"(?:please|could you|can you|would you) (?:provide|paste|share|send|grant|allow|confirm)\b)", re.I)
+CUT_OFF = re.compile(r"(?:[:,;]|\.\.\.|…|\s(?:is|are|was|the|a|an|to|of|and|or|by|with|for|that|because))\s*$", re.I)
+PREAMBLE = re.compile(r"(?:i['’]ll|i will|let me|i['’]m going to|i am going to|starting|first,)\s", re.I)
+DELIVERED = re.compile(r"^(?:[-*]\s*)?(?:i (?:have )?)?(?:implemented|fixed|added|created|saved|completed|changed|wrote)\b|"
+                       r"files changed:\s*(?!(?:none|no|0)\b)\S|```(?:diff|python|javascript|js|json|bash|sh)\b", re.I | re.M)
+
+
+def non_answer(text):
+    """Reject clear non-answers. A reported limitation alone does not invalidate work."""
+    text = text.strip()
+    # Short is fine (a label, a hash, a verdict); only a cut-off sentence or a bare preamble is not.
+    if len(text) < 40 and (CUT_OFF.search(text) or PREAMBLE.match(text)):
+        return 'final message too short to be an answer'
+    opening = text.lstrip('*_`# ')
+    if DELIVERED.search(text):
+        return ''
+    blocked = re.match(r"blocked(?: before implementation|; implementation has not started)|"
+                       r"(?:error:\s*)?(?:bwrap:|newuidmap:|setgroups:)|sandbox (?:error|failure):|"
+                       r"i (?:cannot|can['’]t|am unable to) (?:run|execute) (?:any|all) (?:shell )?commands\b", opening, re.I)
+    if blocked and re.search(r"sandbox|bwrap|uid[ _-]?map|newuidmap|setgroups|permissions?|read-only", text, re.I):
+        return 'blocked by sandbox or permissions without a deliverable'
+    parts = re.split(r'\n\s*\n|(?<=[.!?])\s+(?=[A-Z])', opening)
+    if REFUSAL.match(opening) and all(REFUSAL.match(part.strip()) or re.match(
+            r"(?:no (?:files|changes|tests|commit)\b|files changed:\s*none\b|tests(?: and benchmark)?:\s*not run\b)",
+            part.strip().lstrip('-* '), re.I) for part in parts if part.strip()) and not re.search(
+            r'\b(?:but|however|instead|here (?:is|are))\b', text, re.I):
+        return 'refusal or request for caller input without a deliverable'
+    return ''
 
 
 def claude(model, effort, web, sandbox, workdir, prompt, timeout, tools=False, connectors=None):
@@ -208,9 +245,12 @@ def attempt(spec, args, config, prompt, workdir, pace_path=None, facts=None, poi
     combined = (err or '') + '\n' + (out[-2000:] if proc.returncode else '')
     # Only a failed job counts: a command the agent ran inside the job can print the same bwrap text.
     walled = re.search(r"bwrap: Can't \w+ [^ ]+: Permission denied", (err or '') + (out or ''))
+    uid_map = UID_MAP.search((err or '') + '\n' + (out or ''))
     sandbox_hint = ('Codex sandbox cannot write here (a repo owned by another user; inside bwrap root has '
                     'no rights to it). Fix: setfacl -R -m u:root:rwX -m d:u:root:rwX <repo>. ' + ' '.join(combined.split())[-200:])
-    if walled and proc.returncode:
+    if uid_map:
+        sandbox_hint = 'Codex sandbox user namespace failure: ' + ' '.join(uid_map.group().split())[:200]
+    if (walled or uid_map) and proc.returncode:
         return None, {}, 'sandbox', sandbox_hint
     if proc.returncode:
         kind = 'auth-or-quota' if AUTH_QUOTA.search(combined) else 'exit'
@@ -221,7 +261,10 @@ def attempt(spec, args, config, prompt, workdir, pace_path=None, facts=None, poi
         kind = 'auth-or-quota' if AUTH_QUOTA.search(str(error)) else 'bad-output'
         return None, {}, kind, str(error)[:300]
     if not text:
-        return (None, {}, 'sandbox', sandbox_hint) if walled else (None, {}, 'empty', 'provider returned no final message')
+        return (None, {}, 'sandbox', sandbox_hint) if walled or uid_map else (None, {}, 'empty', 'provider returned no final message')
+    reason = non_answer(text)
+    if reason:
+        return None, {}, 'non-answer', reason
     return text, usage, None, ''
 
 

@@ -504,8 +504,12 @@ through `context/value.py` using `--stakes routine|normal|important|critical` (d
 It tries the best point, then the best point of the other provider, up to three attempts,
 each with its own effort. The old roles and efforts in `context/providers.json` are
 the fallback if the value config is absent or fails. It falls back on a missing CLI, non-zero
-exit, auth/quota/usage-limit message, timeout, empty answer, or a quota below the
-floor in `compute-pace.json`. Each attempt is logged to stderr and
+exit, auth/quota/usage-limit message, timeout, empty answer, non-answer, sandbox
+failure, or a quota below the floor in `compute-pace.json`. Short fragments,
+blocked sandbox or permission reports, and refusals without a deliverable fail.
+Short verdicts pass. These failures have reason `non-answer` in the log.
+Failed uid map, newuidmap or setgroups setup has reason `sandbox` with the cause.
+Each attempt is logged to stderr and
 `~/.cache/genv/g-agent-run.jsonl` with the point id, provider and effort; `--meta F` reports the provider that answered.
 A subscription lapsing or an account being banned therefore degrades a timer, not
 breaks it, and a new vendor is one adapter plus one line of config. `--tools` gives a job

@@ -30,6 +30,10 @@ call before adding their platform-specific configs.
 - `bin/g-scout` and `claude/hooks/luna-scout.py` give substantial Claude subagents
   checked research pointers from the gather runner. `G_SCOUT=0` disables the boost.
   `G_SCOUT_DEBUG=1` records hook decisions under `~/.cache/genv/scout/<agent_id>/`.
+- `bin/g-agent-run` falls back when a provider returns a non-answer. Short fragments,
+  blocked sandbox or permission reports, and refusals without a deliverable fail.
+  Short verdicts pass. Failures are logged with reason `non-answer`.
+  Failed uid map, newuidmap or setgroups setup is logged with reason `sandbox`.
 - `codex/AGENTS.md`, `codex/rules/`: Codex-specific adaptations. Its hooks invoke
   the neutral loader, and the old session-context.py remains a compatibility entry.
   Review hook trust in `/hooks`. The root adapter provides a manual fallback.

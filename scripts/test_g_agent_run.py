@@ -16,26 +16,29 @@ SPEC = importlib.util.spec_from_loader('g_agent_run', SourceFileLoader('g_agent_
 runner = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runner)
 
+CODEX_ANSWER = 'Located the requested function in context/session-context.py:168.'
+CLAUDE_ANSWER = 'Verified the requested behavior and found no remaining issues.'
+
 CODEX_OK = '''#!/bin/sh
 cat >/dev/null
 out=""; while [ $# -gt 0 ]; do [ "$1" = "-o" ] && out="$2"; shift; done
-printf 'codex answer' > "$out"
+printf 'Located the requested function in context/session-context.py:168.' > "$out"
 echo '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}'
 '''
 CLAUDE_OK = '''#!/bin/sh
 cat >/dev/null
-echo '{"result":"claude answer","usage":{"input_tokens":5,"output_tokens":3},"total_cost_usd":0.01}'
+echo '{"result":"Verified the requested behavior and found no remaining issues.","usage":{"input_tokens":5,"output_tokens":3},"total_cost_usd":0.01}'
 '''
 ARGV_CLAUDE = '''#!/bin/sh
 cat >/dev/null
 printf '%s\\n' "$@" > "$ARGV_OUT"
-echo '{"result":"claude answer","usage":{}}'
+echo '{"result":"Verified the requested behavior and found no remaining issues.","usage":{}}'
 '''
 ARGV_CODEX = '''#!/bin/sh
 cat >/dev/null
 printf '%s\\n' "$@" > "$ARGV_OUT"
 out=""; while [ $# -gt 0 ]; do [ "$1" = "-o" ] && out="$2"; shift; done
-printf 'codex answer' > "$out"
+printf 'Located the requested function in context/session-context.py:168.' > "$out"
 '''
 STDIN_LEN = '''#!/bin/sh
 wc -c > "$ARGV_OUT"
@@ -86,7 +89,7 @@ class RunnerTest(unittest.TestCase):
         self.fake('codex', CODEX_OK)
         self.fake('claude', CLAUDE_OK)
         code, text, meta, _ = self.run_role()
-        self.assertEqual((code, text, meta['provider']), (0, 'codex answer', 'codex:gpt-6-luna'))
+        self.assertEqual((code, text, meta['provider']), (0, CODEX_ANSWER, 'codex:gpt-6-luna'))
         self.assertEqual(meta['usage'], {'input': 10, 'output': 2})
 
     def test_codex_effort_lifts_with_codex_temperature(self):
@@ -99,7 +102,7 @@ class RunnerTest(unittest.TestCase):
         self.fake('codex', FAIL_LIMIT)
         self.fake('claude', CLAUDE_OK)
         code, text, meta, err = self.run_role()
-        self.assertEqual((code, text, meta['provider']), (0, 'claude answer', 'claude:sonnet'))
+        self.assertEqual((code, text, meta['provider']), (0, CLAUDE_ANSWER, 'claude:sonnet'))
         self.assertEqual(meta['attempts'][0]['reason'], 'auth-or-quota')
         self.assertIn('usage limit', meta['attempts'][0]['detail'])
         lines = [json.loads(line) for line in (self.tmp / 'log.jsonl').read_text().splitlines()]
@@ -110,7 +113,7 @@ class RunnerTest(unittest.TestCase):
         self.fake('claude', CLAUDE_ERR_JSON)
         self.fake('codex', CODEX_OK)
         code, text, meta, _ = self.run_role('verify')
-        self.assertEqual((code, text, meta['provider']), (0, 'codex answer', 'codex:gpt-6.1-sol'))
+        self.assertEqual((code, text, meta['provider']), (0, CODEX_ANSWER, 'codex:gpt-6.1-sol'))
         self.assertEqual(meta['attempts'][0]['reason'], 'auth-or-quota')
 
     def test_both_clis_failing_exits_3_with_every_reason(self):
@@ -139,7 +142,7 @@ class RunnerTest(unittest.TestCase):
         now = runner.dt.datetime.now(runner.dt.timezone.utc).isoformat()
         (self.tmp / 'pace.json').write_text(json.dumps({'computed_at': now, 'quotas': [{'id': 'codex 7d', 'remaining_pct': 1.0}, {'id': 'claude 5h', 'remaining_pct': 90}]}))
         code, text, meta, _ = self.run_role()
-        self.assertEqual((code, text, meta['provider']), (0, 'claude answer', 'claude:sonnet'))
+        self.assertEqual((code, text, meta['provider']), (0, CLAUDE_ANSWER, 'claude:sonnet'))
         self.assertEqual((meta['attempts'][0]['status'], meta['attempts'][0]['reason']), ('skipped', 'quota-floor'))
 
     def test_empty_answer_falls_back(self):
@@ -147,6 +150,147 @@ class RunnerTest(unittest.TestCase):
         self.fake('claude', CLAUDE_OK)
         code, _, meta, _ = self.run_role()
         self.assertEqual((code, meta['attempts'][0]['reason']), (0, 'empty'))
+
+    def fake_answer(self, name, text, diagnostic=''):
+        body = '#!/bin/sh\ncat >/dev/null\n'
+        if name == 'codex':
+            body += 'out=""; while [ $# -gt 0 ]; do [ "$1" = "-o" ] && out="$2"; shift; done\n'
+            body += 'cat > "$out" <<\'ANSWER\'\n' + text + '\nANSWER\n'
+            body += 'echo \'{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}\'\n'
+        else:
+            body += "cat <<'ANSWER'\n" + json.dumps({'result': text, 'usage': {'input_tokens': 5, 'output_tokens': 3}}) + '\nANSWER\n'
+        if diagnostic:
+            body += "cat >&2 <<'DIAGNOSTIC'\n" + diagnostic + '\nDIAGNOSTIC\n'
+        self.fake(name, body)
+
+    def test_short_fragment_falls_back_and_logs_non_answer(self):
+        self.fake_answer('codex', 'The likely cause is')
+        self.fake('claude', CLAUDE_OK)
+        for text in ("I'll start by reading the files.", 'Here is what I found:'):
+            with self.subTest(text=text):
+                self.assertIn("short", runner.non_answer(text))
+        code, text, meta, err = self.run_role()
+        self.assertEqual((code, text, meta['provider']), (0, CLAUDE_ANSWER, 'claude:sonnet'))
+        failed = meta['attempts'][0]
+        self.assertEqual((failed['status'], failed['reason']), ('failed', 'non-answer'))
+        self.assertIn('short', failed['detail'])
+        self.assertNotIn('usage', failed)
+        lines = [json.loads(line) for line in (self.tmp / 'log.jsonl').read_text().splitlines()]
+        self.assertEqual(lines, meta['attempts'])
+        self.assertIn('non-answer', err)
+
+    def test_short_verdicts_are_answers(self):
+        for text in ('OK', 'PASS', 'FAIL.', 'YES', 'NO', 'LGTM', '**Approved**', 'Rejected', 'None', 'Done',
+                     'archive: duplicate', 'Merged as abc1234.', '8/10', '{"ok": true}'):
+            with self.subTest(text=text):
+                self.fake_answer('codex', text)
+                code, answer, meta, _ = self.run_role()
+                self.assertEqual((code, answer, meta['provider']), (0, text, 'codex:gpt-6-luna'))
+                self.assertEqual(meta['usage'], {'input': 10, 'output': 2})
+
+    def test_blocked_permission_reports_fall_back(self):
+        samples = (
+            "Blocked before implementation.\n\n- Files changed: none; calendar edits untouched.\n"
+            "- Verification: pytest could not run. Shell startup fails with "
+            "`bwrap: Can't mkdir /workspace/.agents: Permission denied`.\n"
+            "- Blockers: shell access must be repaired to implement and verify.\n\nNo commit or push.",
+            "Blocked before implementation: the required worktree command failed:\n\n```text\n"
+            "fatal: cannot lock ref 'refs/heads/fix':\n"
+            "Unable to create '/workspace/.git/refs/heads/fix.lock': Read-only file system\n```\n\n"
+            "- Files changed: none.\n- Tests and benchmark: not run.\n"
+            "- Required access: write permission to /workspace/.git.",
+            "I cannot run any shell commands. Every command fails with "
+            "`bwrap: Failed to make uid map: Permission denied`. No files changed and no tests ran.",
+            "bwrap: Failed to make uid map: Permission denied",
+            "Sandbox error: bwrap: Failed to make uid map: Permission denied",
+        )
+        self.fake('claude', CLAUDE_OK)
+        for text in samples:
+            with self.subTest(text=text):
+                self.fake_answer('codex', text)
+                code, _, meta, _ = self.run_role()
+                self.assertEqual((code, meta['attempts'][0]['reason'], meta['provider']),
+                                 (0, 'non-answer', 'claude:sonnet'))
+                self.assertIn('permission', meta['attempts'][0]['detail'])
+
+    def test_refusals_and_requests_without_a_deliverable_fall_back(self):
+        self.fake('codex', CODEX_OK)
+        for text in (
+            "I can't access that repository from this environment. Please paste the files so I can review them.",
+            "I cannot complete this task with the tools available in this session.",
+            "I cannot complete this task with the tools available in this session.\n\n"
+            "Files changed: none. Tests: not run.",
+            "I need you to provide the relevant files before I can implement the change.",
+            "Could you paste the repository files so I can review the implementation?",
+        ):
+            with self.subTest(text=text):
+                self.fake_answer('claude', text)
+                code, _, meta, _ = self.run_role('verify')
+                self.assertEqual((code, meta['attempts'][0]['reason'], meta['provider']),
+                                 (0, 'non-answer', 'codex:gpt-6.1-sol'))
+
+    def test_genuine_answer_survives_blocker_words_and_failed_inner_commands(self):
+        text = ("Fixed all three crashes, each with a regression that failed before the fix.\n\n"
+                "- Changed presenter/front comparison and region framing.\n"
+                "- Verification: 2,034 Node passes, 0 failures; 24 Python passes.\n"
+                "- The first command hit `bwrap: Failed to make uid map: Permission denied`; "
+                "the rerun completed after correcting the sandbox setup.\n"
+                "- Commits blocked by read-only Git metadata; nothing pushed.\n"
+                "Three separately applicable patches: /tmp/air.patch, /tmp/router.patch, /tmp/batches.patch.")
+        self.fake_answer('codex', text, 'bwrap: Failed to make uid map: Permission denied')
+        code, answer, meta, _ = self.run_role()
+        self.assertEqual((code, answer, meta['provider']), (0, text, 'codex:gpt-6-luna'))
+        self.assertEqual(len(meta['attempts']), 1)
+
+    def test_refusal_with_delivered_work_or_analysis_still_passes(self):
+        for text in (
+            "No files changed; the existing implementation already matches the requested behavior.",
+            "I cannot commit because Git metadata is read-only.\n\n"
+            "Fixed the renderer-cache leak and verified all 175 tests pass. Patches are in /tmp/fix.patch.",
+            "I can't access the live service.\n\n"
+            "The retained logs show that requests fail at authentication before reaching the handler. "
+            "The next check is to compare the configured issuer with the token issuer.",
+            "I cannot run commands in this sandbox.\n\n"
+            "The retained logs show that requests fail at authentication before reaching the handler. "
+            "The next check is to compare the configured issuer with the token issuer.",
+            "I need you to confirm the deployment window.\n\n"
+            "Implemented the requested change. Verification: 16 tests passed.",
+        ):
+            with self.subTest(text=text):
+                self.fake_answer('codex', text)
+                code, answer, meta, _ = self.run_role()
+                self.assertEqual((code, answer, meta['provider']), (0, text, 'codex:gpt-6-luna'))
+
+    def test_uid_map_failures_in_stderr_or_stdout_are_sandbox_failures(self):
+        errors = ('bwrap: Failed to make uid map: Permission denied',
+                  'newuidmap: write to uid_map failed: Operation not permitted',
+                  'bwrap: setgroups failed: Operation not permitted',
+                  'bwrap: uid map setup requested\nbwrap: Failed to make uid map: Permission denied')
+        self.fake('claude', CLAUDE_OK)
+        for error in errors:
+            for stream in ('stderr', 'stdout'):
+                with self.subTest(error=error, stream=stream):
+                    target = ' >&2' if stream == 'stderr' else ''
+                    self.fake('codex', "#!/bin/sh\ncat >/dev/null\ncat" + target + " <<'ERROR'\n" + error + '\nERROR\nexit 1\n')
+                    code, _, meta, _ = self.run_role()
+                    self.assertEqual((code, meta['attempts'][0]['reason'], meta['provider']),
+                                     (0, 'sandbox', 'claude:sonnet'))
+                    self.assertIn(error.splitlines()[-1], meta['attempts'][0]['detail'])
+
+    def test_empty_final_with_uid_map_error_is_sandbox_failure(self):
+        self.fake('codex', "#!/bin/sh\ncat >/dev/null\necho 'bwrap: Failed to make uid map: Permission denied' >&2\n")
+        self.fake('claude', CLAUDE_OK)
+        code, _, meta, _ = self.run_role()
+        self.assertEqual((code, meta['attempts'][0]['reason']), (0, 'sandbox'))
+
+    def test_all_non_answers_exit_3_without_output_or_usage(self):
+        self.fake_answer('codex', 'The likely cause is')
+        self.fake_answer('claude', 'I need you to paste the source files before I can review them.')
+        code, text, meta, err = self.run_role()
+        self.assertEqual((code, text, meta['provider']), (3, '', None))
+        self.assertEqual([a['reason'] for a in meta['attempts']], ['non-answer', 'non-answer'])
+        self.assertNotIn('usage', meta)
+        self.assertIn('every provider failed', err)
 
     def run_flags(self, role, *flags):
         (self.tmp / 'argv.txt').unlink(missing_ok=True)
