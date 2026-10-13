@@ -10,6 +10,9 @@ from pathlib import Path
 
 AEROSPACE = str(Path.home() / ".local/bin/aerospace")
 HEARTBEAT = 30
+# Only "is a browser focused" leaves the Mac, never an app or window name.
+BROWSERS = {"Google Chrome", "Safari", "Arc", "Firefox", "Brave Browser",
+            "Microsoft Edge", "Chromium", "Orion", "Zen", "Vivaldi", "Dia"}
 SSH_CONFIG = str(Path.home() / ".ssh/ae-presence/config")
 # mktemp and rename share a filesystem; readers only ever see complete JSON.
 # h's checkouts sit beside its framework, which ~/.agents/session-context.py links into.
@@ -19,6 +22,8 @@ tmp=$(mktemp .presence.XXXXXXXX)
 trap 'rm -f "$tmp"' EXIT
 cat > "$tmp"
 chmod 644 "$tmp"
+# g-wages reads the history to bill browser time on the Baseline workspaces.
+cat "$tmp" >> presence-log.jsonl
 mv -f "$tmp" presence.json
 """
 
@@ -32,11 +37,29 @@ def focused_workspace():
     return int(value.rstrip("x")) if re.fullmatch(r"[0-9]+x?", value) else None
 
 
-def publish(workspace, observed_at):
+def browser_focused():
+    result = subprocess.run(
+        [AEROSPACE, "list-windows", "--focused", "--format", "%{app-name}"],
+        capture_output=True, text=True, timeout=3,
+    )
+    return result.returncode == 0 and result.stdout.strip() in BROWSERS
+
+
+def idle_seconds():
+    result = subprocess.run(
+        ["/usr/sbin/ioreg", "-c", "IOHIDSystem", "-d", "4"],
+        capture_output=True, text=True, timeout=3,
+    )
+    match = re.search(r'"HIDIdleTime" = (\d+)', result.stdout)
+    return int(match.group(1)) // 1_000_000_000 if match else None
+
+
+def publish(workspace, browser, idle, observed_at):
     subprocess.run(
         ["/usr/bin/ssh", "-F", SSH_CONFIG, "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
          "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=1", "h", PUBLISH],
-        input=json.dumps({"workspace": workspace, "observed_at": observed_at}) + "\n",
+        input=json.dumps({"workspace": workspace, "browser": browser, "idle": idle,
+                          "observed_at": observed_at}) + "\n",
         text=True, stdout=subprocess.DEVNULL, check=True, timeout=10,
     )
 
@@ -50,17 +73,18 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return
-        last_workspace = None
+        last_state = None
         last_sent = 0
         while True:
             try:
                 workspace = focused_workspace()
+                browser = browser_focused()
                 now = time.time()
                 if workspace is not None and (
-                    workspace != last_workspace or now - last_sent >= HEARTBEAT
+                    (workspace, browser) != last_state or now - last_sent >= HEARTBEAT
                 ):
-                    publish(workspace, int(now))
-                    last_workspace, last_sent = workspace, now
+                    publish(workspace, browser, idle_seconds(), int(now))
+                    last_state, last_sent = (workspace, browser), now
             except (OSError, subprocess.SubprocessError) as error:
                 print(f"ae-presence: {error}", flush=True)
                 # No queued observations: retry with fresh focus and timestamp.

@@ -28,7 +28,10 @@ checkouts and passport through it.
 
 `ae-presence` independently polls AeroSpace focus every second (folding Nx to N)
 and atomically publishes `g-site/data/presence.json` over SSH to h on changes and
-every 30 seconds. It never blocks or changes `ae-follow`/`ae-switch`. Its separate
+every 30 seconds, plus whether a browser is the focused app and HID idle
+seconds (no app or window names leave the Mac). Each publish is also appended to
+`g-site/data/presence-log.jsonl`, which g-wages bills as browser time on the
+Baseline workspaces. It never blocks or changes `ae-follow`/`ae-switch`. Its separate
 LaunchAgent stays installed when genv stops; without AeroSpace it cannot sample
 focus and the website expires presence to Away after 90 seconds. No sleep is
 prevented, no agent activity is consulted, and failed sends retry fresh samples.
