@@ -20,7 +20,7 @@ rights to files another user owns, so a repo on h owned by the workspace user fa
 (`setfacl -R -m u:root:rwX -m d:u:root:rwX <repo>`, applied on h 2026-10-05, with a default
 ACL on the workspace for new repos), and the job reports reason "sandbox" with that hint.
 danger-full-access is what Claude's tools mode already amounts to. Claude gets Read,Bash(+Write,Edit); Codex gets
-`exec --sandbox` plus network_access=true when writable. --connectors (Claude only) keeps the
+`exec --sandbox` plus network_access=true when writable. --connectors (implies --claude-only) keeps the
 account's MCP connectors for jobs that cannot work without them; the servers listed under "connectors" in providers.json are allowed (an
 unlisted connector is denied, because the permission mode never asks). Codex has
 none, so such a job falling over to Codex must report failure rather than guess.
@@ -247,6 +247,8 @@ def main(argv=None):
     parser.add_argument('--out')
     parser.add_argument('--meta')
     args = parser.parse_args(argv)
+    if args.connectors:
+        args.claude_only = True
     config_path = os.environ.get('G_AGENT_PROVIDERS', HERE.parent / 'context/providers.json')
     pace_path = os.environ.get('G_AGENT_PACE', CACHE / 'compute-pace.json')
     log_path = Path(os.environ.get('G_AGENT_LOG', CACHE / 'g-agent-run.jsonl'))
