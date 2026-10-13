@@ -9,7 +9,9 @@ import temperature
 HERE = Path(__file__).resolve().parent
 BASE = {'claude': 9.0, 'codex': 3.3}
 RESERVE = {'claude': 15, 'codex': 0}
-RATIOS = {'BURN': 0.3, 'HOT': 0.5, 'WARM': 0.75, 'COOL': 1.0, 'COLD': 1.5, 'FREEZING': 2.5}
+# Measured EBURN keeps its measured price and a forced one prices like BURN: it widens and
+# lifts effort, it never pulls taste work off Claude.
+RATIOS = {'EBURN': 0.3, 'BURN': 0.3, 'HOT': 0.5, 'WARM': 0.75, 'COOL': 1.0, 'COLD': 1.5, 'FREEZING': 2.5}
 STAKES = {'routine': 0.8, 'normal': 1.0, 'important': 1.4, 'critical': 2.0}
 FAMILIES = {'opus-5.5': 'opus', 'sonnet-5.5': 'sonnet', 'haiku-5.5': 'haiku', 'fable-5.1': 'fable', 'gpt-6.1-sol': 'sol',
             'gpt-6-luna': 'luna', 'gpt-6-astra': 'astra'}
@@ -158,6 +160,9 @@ def _excluded(point, role, stakes, allow_claude, claude_only, current, rule, dom
     if (point['provider'] == 'claude' and not (claude_only or allow_claude or stakes == 'critical' or rule.get('taste'))
             and current['claude']['temp'] in temperature.GATED):
         return f"Claude is {current['claude']['temp'].title()}, so it needs critical stakes or a Claude-only job"
+    if (point['provider'] == 'claude' and current['codex']['temp'] == 'EBURN'
+            and not (claude_only or allow_claude or stakes == 'critical' or rule.get('taste'))):
+        return 'Codex is in EBURN, so work without taste runs on Codex and Claude keeps its headroom'
     return None
 
 

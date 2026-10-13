@@ -180,6 +180,8 @@ def attempt(spec, args, config, prompt, workdir, pace_path=None, facts=None, poi
         return None, {}, 'missing-cli', f'{vendor} not on PATH'
     timeout = config.get('timeout_s', {}).get(args.role, 900)
     effort = point['effort'] if point else config.get('effort', {}).get(args.role, 'medium')
+    if vendor == 'codex':
+        effort = temperature.codex_effort(effort, path=pace_path, mode_path=os.environ.get('G_AGENT_MODE'))
     if vendor == 'claude' and not (args.allow_claude or args.claude_only or args.stakes == 'critical'
                                     or value.values_taste(args.role, getattr(args, 'domain', None))):
         t = temperature.provider('claude', path=pace_path, mode_path=os.environ.get('G_AGENT_MODE'))

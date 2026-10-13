@@ -74,9 +74,15 @@ Keep architecture, ambiguous tradeoffs, visual judgment, nuanced writing and fin
 code-quality decisions with the stronger model. It may implement directly when
 delegation would obscure the problem.
 
-Width follows Claude's temperature. At Cool or colder, start independent work with
+Width follows each provider's temperature. At Cool or colder, start independent work with
 one or two cheap workers; use more when scope warrants it. At Hot or Burn, spare
-quota goes wider before it goes stronger: up to 4 (Hot) or 6 (Burn) parallel workers,
+quota goes wider before it goes stronger: up to 4 (Hot) or 6 (Burn) parallel Claude
+workers, and up to 6 (Hot) or 10 (Burn) parallel Codex jobs. Codex allowance expires
+unannounced (early resets) and goes to waste, so at Codex Burn every bounded job
+that can leave Claude goes to Sol or Astra, wide. EBURN (temperature.py: the window
+expires within 12h with over 10% left, or Codex holds over 50% until the end-October
+cancellation) moves all work without taste off Claude, lifts Codex effort two levels
+and lets `g-eburn` run its own backlog 10 wide;
 several explorers on different angles, two independent attempts at an important
 build (keep the better), and a separate verifier on every build. Wide Claude-only
 sweeps (private data, connectors) fan out across `haiku-xhigh-worker`. Give each a question, bounded inputs, read-only scope or exclusive files, a

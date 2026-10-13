@@ -195,11 +195,20 @@ def pace_section(home, now=None):
             reset = dt.datetime.fromisoformat(q['resets_at'])
             when = reset.astimezone(london).strftime('%H:%M' if q['window_hours'] <= 24 else '%a %H:%M')
             line = f"{q['id']}: {q['remaining_pct']:g}% left, resets {when} ({_span(reset.timestamp() - now)})"
+            known = q.get('known_reset')
+            known_text = ''
+            if known:
+                point = dt.datetime.fromisoformat(known['at']).astimezone(london)
+                known_text = f", known reset {point:%a %d %b %H:%M}"
+                if known.get('note'):
+                    known_text += f" ({known['note']})"
+            line += known_text
             burn = q.get('burn_pct_per_work_hour')
             if burn is None:
                 line = f"{q['id']}: {q['remaining_pct']:g}% left"
                 if q['window_hours'] > 24:
                     line += f', resets {when}'
+                line += known_text
                 sample = (q['provider'], q['used_pct'])
                 if sample not in samples:
                     line += f"; used {q['used_pct']:g}% so far (<3 work-h sampled)"
@@ -213,6 +222,8 @@ def pace_section(home, now=None):
                     line += f" -> runs out ~{out:%a %H:%M} (~{q['work_hours_to_run_out']:.0f} work-h)"
                 else:
                     line += f" -> ~{q['projected_remaining_pct']:.0f}% left at reset"
+            if q.get('reset_risk'):
+                line += f" [reset risk: {q['reset_risk']}]"
             fetched = max(0, now - dt.datetime.fromisoformat(q['usage_fetched_at']).timestamp())
             if fetched > 1800:
                 line += f' [usage {_age(fetched)} old]'

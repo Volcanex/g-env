@@ -16,7 +16,8 @@ Burn rate is the quota used between the earliest recorded observation in the las
 48h (same window) and now, divided by Claude+Codex work hours in that span. It is
 "% per hour of his presence", a proxy for leverage, not metered per-hour spend.
 Safe burn is the rate that would spend what is left down to SAFE_LEFT_PCT over the
-work hours expected before reset: the line not to cross to avoid running out.
+work hours expected before the earlier known or reported reset: the line not to
+cross to avoid running out.
 
 Usual pace is the mean over the trailing 7 days, widening to 14 or 28 only when the
 shorter window has too few active days. The 28-day weekday-hour profile gives the
@@ -235,11 +236,17 @@ def baseline(observations, row, reset, now, lookback_h=48):
     return best
 
 
-def build(rows, turns, now, hosts=None, missing_hosts=None, idle=None, tail=None, observations=None, sources=None):
-    """Pure pace calculation. `turns` are aware datetimes of human prompts.
+def build(rows, turns, now, hosts=None, missing_hosts=None, idle=None, tail=None, observations=None, sources=None, resets_path=None):
+    """Pace calculation with known reset points and risk windows.
+
+    `turns` are aware datetimes of human prompts.
 
     `sources` names the prompt sources counted; an empty list means none were.
     """
+    try:
+        resets = _load_module("g_reset", Path(__file__).resolve().parent / "g-reset").load(resets_path, now)
+    except (OSError, ValueError, KeyError, TypeError):
+        resets = []
     idle = idle or dt.timedelta(minutes=30)
     tail = tail or dt.timedelta(minutes=10)
     turns = sorted(turns)
@@ -263,6 +270,21 @@ def build(rows, turns, now, hosts=None, missing_hosts=None, idle=None, tail=None
             fetched = dt.datetime.fromisoformat(r["fetched_at"])
         except (TypeError, ValueError):
             continue
+        effective, known, risk = reset, None, None
+        for entry in resets:
+            try:
+                if entry.get("provider") != r["provider"]:
+                    continue
+                if entry.get("kind") == "point":
+                    point = dt.datetime.fromisoformat(entry["at"])
+                    if now < point < effective:
+                        effective = point
+                        known = {"at": point.isoformat(), "note": entry.get("note") or ""}
+                elif entry.get("kind") == "window":
+                    if dt.datetime.fromisoformat(entry["from"]) <= now < dt.datetime.fromisoformat(entry["to"]):
+                        risk = entry.get("note") or "risk window"
+            except (ValueError, KeyError, TypeError, AttributeError):
+                continue
         win = _window_hours(r)
         start = reset - dt.timedelta(hours=win)
         observed_to = min(now, fetched)
@@ -270,21 +292,23 @@ def build(rows, turns, now, hosts=None, missing_hosts=None, idle=None, tail=None
         sampled = overlap_hours(ivs, base[0], observed_to) if base else 0.0
         low = sampled < LOW_SAMPLE_H
         burn = max(0.0, r["used"] - base[1]) / sampled if base and not low else None
-        future = expected_hours(profile, now, reset) if reset > now else 0.0
+        future = expected_hours(profile, now, effective) if effective > now else 0.0
         qid = _label(r["provider"], win)
         proj = max(0.0, r["remaining"] - burn * future) if burn is not None else None
         safe = max(0.0, r["remaining"] - SAFE_LEFT_PCT) / future if future > 0 else None
         runs_out, out_hours = None, None
-        if burn and burn > 0 and r["remaining"] - burn * future <= 0 and reset > now:
+        if burn and burn > 0 and r["remaining"] - burn * future <= 0 and effective > now:
             out_hours = r["remaining"] / burn
-            when = exhaust_time(profile, now, reset, out_hours)
+            when = exhaust_time(profile, now, effective, out_hours)
             runs_out = when.isoformat() if when else None
         if r["metric"] == "seven_day" and r["provider"] == "claude":
             week_so_far = overlap_hours(ivs, start, now)
         quotas.append({
             "id": qid, "provider": r["provider"], "metric": r["metric"],
             "window_hours": win, "remaining_pct": r["remaining"], "used_pct": r["used"],
-            "resets_at": reset.isoformat(), "seconds_to_reset": int((reset - now).total_seconds()),
+            "resets_at": reset.isoformat(), "effective_resets_at": effective.isoformat(),
+            "known_reset": known, "reset_risk": risk,
+            "seconds_to_reset": int((effective - now).total_seconds()),
             "active_hours_in_window": round(overlap_hours(ivs, start, now), 2),
             "sampled_work_hours": round(sampled, 2),
             "sampled_since": base[0].isoformat() if base else None,
@@ -319,7 +343,8 @@ def build(rows, turns, now, hosts=None, missing_hosts=None, idle=None, tail=None
                   "30 min (session-gap slice); every quota is burned per total work hour; burn = used% gained "
                   "between the earliest recorded observation in the last 48h of the same window and now, over "
                   "work hours in that span; under 3 sampled hours there is no rate and no projection; "
-                  "projection = remaining - burn x typical work hours to reset (28-day weekday-hour profile "
+                  "projection = remaining - burn x typical work hours to the earlier known or reported reset "
+                  "(28-day weekday-hour profile "
                   "scaled to the usual pace: trailing 7 days, or 14/28 when fewer than 4 days were active); "
                   "safe burn = (remaining - 5) / those work hours, so following it leaves about 0-5% at reset",
     }
@@ -376,7 +401,8 @@ def load(path=OUT, now=None):
     data["age_seconds"] = age
     for q in data.get("quotas", []):
         try:
-            q["seconds_to_reset"] = int(dt.datetime.fromisoformat(q["resets_at"]).timestamp() - now)
+            reset = q.get("effective_resets_at") or q["resets_at"]
+            q["seconds_to_reset"] = int(dt.datetime.fromisoformat(reset).timestamp() - now)
         except (KeyError, TypeError, ValueError):
             pass
     return data

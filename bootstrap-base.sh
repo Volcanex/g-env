@@ -91,6 +91,8 @@ link "$REPO/bin/g-agent-call" "$HOME/.local/bin/g-agent-call"
 link "$REPO/bin/g-scout" "$HOME/.local/bin/g-scout"
 link "$REPO/bin/g-pick" "$HOME/.local/bin/g-pick"
 link "$REPO/bin/g-temp" "$HOME/.local/bin/g-temp"
+link "$REPO/bin/g-reset" "$HOME/.local/bin/g-reset"
+link "$REPO/bin/g-eburn" "$HOME/.local/bin/g-eburn"
 link "$REPO/bin/refresh-models" "$HOME/.local/bin/refresh-models"
 link "$REPO/bin/g-instance" "$HOME/.local/bin/g-instance"
 

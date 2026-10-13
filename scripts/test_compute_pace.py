@@ -175,6 +175,94 @@ class BuildTests(unittest.TestCase):
             self.assertIsNone(pace.load(path))
 
 
+class ResetTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "resets.json"
+
+    def build(self, entries, rows=None, observations=None):
+        self.path.write_text(json.dumps(entries))
+        return pace.build(rows or [row("seven_day", 80, at(11, 0))], day_turns(), NOW,
+                          observations=observations or [obs("seven_day", 20, at(11, 0), 26)],
+                          resets_path=self.path)
+
+    def point(self, at, provider="claude", note="subscription ends"):
+        return {"kind": "point", "provider": provider, "at": at.isoformat(), "note": note}
+
+    def test_earliest_future_point_shortens_projection_not_historical_sample(self):
+        original = self.build([])["quotas"][0]
+        data = self.build([self.point(at(6, 12)), self.point(at(5, 10)),
+                           self.point(NOW), self.point(at(3, 12))])
+        q = data["quotas"][0]
+        self.assertEqual(q["resets_at"], at(11, 0).isoformat())
+        self.assertEqual(q["effective_resets_at"], at(5, 10).isoformat())
+        self.assertEqual(q["known_reset"], {"at": at(5, 10).isoformat(), "note": "subscription ends"})
+        self.assertEqual(q["seconds_to_reset"], 22 * 3600)
+        self.assertEqual(q["burn_pct_per_work_hour"], original["burn_pct_per_work_hour"])
+        self.assertEqual(q["active_hours_in_window"], original["active_hours_in_window"])
+        self.assertLess(q["work_hours_left"], original["work_hours_left"])
+        self.assertGreater(q["safe_burn_pct_per_work_hour"], original["safe_burn_pct_per_work_hour"])
+        self.assertIsNotNone(original["runs_out_at"])
+        self.assertIsNone(q["runs_out_at"])
+        self.assertGreater(q["projected_remaining_pct"], 0)
+        cache = self.path.parent / "pace.json"
+        cache.write_text(json.dumps(data))
+        self.assertEqual(pace.load(cache, now=NOW.timestamp() + 3600)["quotas"][0]["seconds_to_reset"], 21 * 3600)
+
+    def test_points_only_shorten_matching_provider_windows(self):
+        rows = [row("five_hour", 10, at(4, 16)), row("seven_day", 10, at(11, 0)),
+                row("seven_day", 10, at(11, 0), provider="codex")]
+        quotas = self.build([self.point(at(5, 10))], rows)["quotas"]
+        self.assertIsNone(quotas[0]["known_reset"])
+        self.assertIsNotNone(quotas[1]["known_reset"])
+        self.assertIsNone(quotas[2]["known_reset"])
+        for entries in ([self.point(NOW)], [self.point(at(3, 12))], [self.point(at(11, 0))],
+                        [self.point(at(12, 0))], []):
+            q = self.build(entries)["quotas"][0]
+            self.assertIsNone(q["known_reset"])
+            self.assertEqual(q["effective_resets_at"], q["resets_at"])
+
+    def test_risk_window_boundaries_default_note_and_provider(self):
+        for start, end, provider, note, expected in (
+                (NOW, at(6, 0), "claude", "pledge", "pledge"),
+                (at(3, 0), NOW, "claude", "pledge", None),
+                (at(5, 0), at(6, 0), "claude", "pledge", None),
+                (NOW, at(6, 0), "codex", "pledge", None),
+                (NOW, at(6, 0), "claude", "", "risk window")):
+            entries = [{"kind": "window", "provider": provider, "from": start.isoformat(),
+                        "to": end.isoformat(), "note": note}]
+            q = self.build(entries)["quotas"][0]
+            self.assertEqual(q["reset_risk"], expected)
+            self.assertEqual(q["effective_resets_at"], q["resets_at"])
+
+    def test_missing_or_corrupt_resets_leave_reported_reset(self):
+        for text in (None, "broken", "{}"):
+            if text is not None:
+                self.path.write_text(text)
+            q = pace.build([row("seven_day", 10, at(11, 0))], [], NOW, resets_path=self.path)["quotas"][0]
+            self.assertEqual(q["effective_resets_at"], q["resets_at"])
+            self.assertIsNone(q["known_reset"])
+            self.assertIsNone(q["reset_risk"])
+
+    def test_session_line_shows_known_reset_and_risk_with_or_without_sample(self):
+        for turns in ([], day_turns()):
+            self.path.write_text(json.dumps([self.point(at(5, 10)),
+                {"kind": "window", "provider": "claude", "from": NOW.isoformat(),
+                 "to": at(6, 0).isoformat(), "note": "pledge"}]))
+            data = pace.build([row("seven_day", 80, at(11, 0))], turns, NOW,
+                              observations=[obs("seven_day", 20, at(11, 0), 26)], resets_path=self.path)
+            home = self.path.parent
+            cache = home / ".cache/genv/compute-pace.json"
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text(json.dumps(data))
+            text = ctx.pace_section(home, now=NOW.timestamp())
+            line = next(line for line in text.splitlines() if line.startswith("claude 7d:"))
+            self.assertIn("resets Sun 01:00", line)
+            self.assertIn("known reset Mon 05 Oct 11:00 (subscription ends)", line)
+            self.assertIn("[reset risk: pledge]", line)
+
+
 class CodexPromptTests(unittest.TestCase):
     def test_counts_only_top_level_user_turns(self):
         with tempfile.TemporaryDirectory() as tmp:

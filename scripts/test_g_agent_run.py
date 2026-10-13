@@ -89,6 +89,12 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual((code, text, meta['provider']), (0, 'codex answer', 'codex:gpt-6-luna'))
         self.assertEqual(meta['usage'], {'input': 10, 'output': 2})
 
+    def test_codex_effort_lifts_with_codex_temperature(self):
+        self.fake('codex', CODEX_OK)
+        runner.temperature.set_override('codex', temp='EBURN', path=self.tmp / 'mode.json')
+        _, _, meta, _ = self.run_role()
+        self.assertEqual(meta['attempts'][0]['effort'], 'xhigh')
+
     def test_codex_usage_limit_falls_back_to_claude_and_logs_why(self):
         self.fake('codex', FAIL_LIMIT)
         self.fake('claude', CLAUDE_OK)

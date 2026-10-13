@@ -17,6 +17,7 @@ def _c(hexcode):
     return f"\033[38;2;{int(hexcode[0:2],16)};{int(hexcode[2:4],16)};{int(hexcode[4:6],16)}m"
 
 BLUE, GREEN, YEL, AMB, RED = _c("6ab0ff"), _c("4ade80"), _c("ffd60a"), _c("ff9f0a"), _c("ff5347")
+MAG = _c("e879f9")
 ORG = _c("ff6a00")
 
 def scale(value, bands):
@@ -114,8 +115,10 @@ def rename_tmux_window(title):
         pass
 
 
-# BURN = plenty spare, spend it. FREEZING = nearly out, be careful.
+# EBURN = expiring soon with plenty left, spend everything. BURN = plenty spare,
+# spend it. FREEZING = nearly out, be careful. EBURN has no headroom threshold.
 TEMPERATURES = (
+    (float("inf"), "EBURN", MAG),
     (2.5, "BURN", BLUE),
     (1.6, "HOT", GREEN),
     (1.15, "WARM", YEL),
@@ -322,9 +325,10 @@ try:
             parts.append(f"{scale(u, FILL)}{round(100 - u)}%{R}")
         mark = "*" if temperature.state("codex")["temp_override"] else ""
         parts.append(f"{F}CDX{R} {colour}{word}{mark}{R}")
-        left = secs_until(quota.get("resets_at"))
+        # A known reset (g-reset) beats the reported one; ? marks a reset-risk window.
+        left = secs_until(quota.get("effective_resets_at") or quota.get("resets_at"))
         if left is not None:
-            parts.append(f"{F}{until(left)}{R}")
+            parts.append(f"{F}{until(left)}{'?' if quota.get('reset_risk') else ''}{R}")
         bits.append(" ".join(parts))
 except Exception:
     pass

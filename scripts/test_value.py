@@ -313,6 +313,20 @@ class ValueTests(unittest.TestCase):
         bad = subprocess.run([str(REPO / 'bin/g-pick'), '--role', 'unknown'], env=env, capture_output=True, text=True)
         self.assertEqual(bad.returncode, 2)
 
+    def test_codex_eburn_moves_non_taste_work_off_claude(self):
+        self.write(quota('claude'), quota('codex'))
+        self.override('codex', temp='EBURN')
+        for role in value._config()['value']:
+            rule = value._config()['value'][role]
+            pick = value.pick(role, 'normal', **self.paths)['pick']
+            if not rule.get('taste'):
+                self.assertEqual(pick['provider'], 'codex', role)
+        ui = value.pick('build', 'routine', domain='ui', **self.paths)['pick']['id']
+        self.override('codex', temp='BURN')
+        self.assertEqual(value.pick('build', 'routine', domain='ui', **self.paths)['pick']['id'], ui)
+        self.override('codex', temp='EBURN')
+        self.assertEqual(value.pick('build', 'critical', allow_claude=True, **self.paths)['prices']['codex']['temp'], 'EBURN')
+
 
 class RoutingTests(unittest.TestCase):
     def setUp(self):

@@ -16,6 +16,11 @@ wall-clock headroom at x5 or more (about 75% left two thirds through the week),
 else it reads HOT: work-hour pace swings high after a few quiet hours and would
 spend quota the busy days still need. Near the reset the wall clock gets there on
 its own; `g-temp claude burn` gets there any time.
+
+EBURN sits above BURN: the weekly window resets (at the earlier of the known and
+reported reset) within EBURN_HOURS with more than EBURN_LEFT percent left, so what
+is left is about to be wasted, or holds more than EBURN_ABOVE percent. Spend it on
+anything useful, as wide as possible. `g-temp codex eburn` forces it.
 """
 import datetime as dt
 import json
@@ -24,7 +29,11 @@ from zoneinfo import ZoneInfo
 
 TEMPERATURES = ((2.5, 'BURN'), (1.6, 'HOT'), (1.15, 'WARM'), (0.85, 'COOL'), (0.5, 'COLD'), (None, 'FREEZING'))
 GATED = {'COLD', 'FREEZING'}
-WORDS = tuple(w for _, w in TEMPERATURES)
+WORDS = ('EBURN',) + tuple(w for _, w in TEMPERATURES)
+EBURN_HOURS = 12
+EBURN_LEFT = 10.0
+# Above this much left a provider is EBURN outright. Codex is cancelled at the end of October 2026.
+EBURN_ABOVE = {'codex': 50.0}
 SPEEDS = ('FAST', 'NORMAL', 'SLOW')
 PROVIDERS = ('claude', 'codex')
 CLAUDE_BURN_WALL = 5.0
@@ -106,7 +115,7 @@ def ratio(q, now):
     burn, safe = q.get('burn_pct_per_work_hour'), q.get('safe_burn_pct_per_work_hour')
     if burn and safe is not None and not q.get('low_sample'):
         return safe / burn
-    left = (dt.datetime.fromisoformat(q['resets_at']) - now).total_seconds()
+    left = (dt.datetime.fromisoformat(q.get('effective_resets_at') or q['resets_at']) - now).total_seconds()
     return headroom(q.get('used_pct'), left, q['window_hours'] * 3600)
 
 
@@ -114,9 +123,21 @@ def wall(quotas, name, now):
     """Wall-clock headroom of the provider's weekly window (0 when unknown)."""
     for q in quotas:
         if q.get('provider') == name and q.get('window_hours', 0) >= 168:
-            left = (dt.datetime.fromisoformat(q['resets_at']) - now).total_seconds()
+            left = (dt.datetime.fromisoformat(q.get('effective_resets_at') or q['resets_at']) - now).total_seconds()
             return headroom(q.get('used_pct'), left, q['window_hours'] * 3600) or 0
     return 0
+
+
+def expiring(quotas, name, now):
+    """True when the weekly window resets within EBURN_HOURS with more than EBURN_LEFT% left, or holds more than EBURN_ABOVE."""
+    for q in quotas:
+        if q.get('provider') == name and q.get('window_hours', 0) >= 168 and q.get('remaining_pct') is not None:
+            left = (dt.datetime.fromisoformat(q.get('effective_resets_at') or q['resets_at']) - now).total_seconds()
+            if 0 < left <= EBURN_HOURS * 3600 and q['remaining_pct'] > EBURN_LEFT:
+                return True
+            if q['remaining_pct'] > EBURN_ABOVE.get(name, 100):
+                return True
+    return False
 
 
 def measured(name, home=None, now=None, max_age=3 * 3600, path=None):
@@ -138,6 +159,8 @@ def measured(name, home=None, now=None, max_age=3 * 3600, path=None):
         w = word(rooms[binding])
         if name == 'claude' and w == 'BURN' and wall(data['quotas'], name, now) < CLAUDE_BURN_WALL:
             w = 'HOT'
+        if expiring(data['quotas'], name, now):
+            w = 'EBURN'
         return w, rooms[binding], binding
     except Exception:
         return None
@@ -171,7 +194,7 @@ LEVELS = ('low', 'medium', 'high', 'xhigh')
 def codex_effort(base, home=None, now=None, path=None, mode_path=None):
     """Shift a Codex role's effort with Codex's temperature and speed: spare Codex buys quality.
 
-    BURN lifts a level up to xhigh (Sol max, AA 52 against 48 at medium), HOT lifts
+    EBURN lifts two levels, BURN one, up to xhigh (Sol max, AA 52 against 48 at medium), HOT lifts
     one up to high, COLD and FREEZING drop one. SLOW adds a level; FAST caps at medium,
     since Sol high takes ~50s to its first token against ~5s at medium.
     """
@@ -179,7 +202,9 @@ def codex_effort(base, home=None, now=None, path=None, mode_path=None):
         return base
     s = state('codex', home, now, path, mode_path)
     i = LEVELS.index(base)
-    if s['temp'] == 'BURN':
+    if s['temp'] == 'EBURN':
+        i += 2
+    elif s['temp'] == 'BURN':
         i += 1
     elif s['temp'] == 'HOT':
         i = max(i, min(i + 1, LEVELS.index('high')))

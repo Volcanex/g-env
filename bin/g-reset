@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""Record known quota resets or allowance ends, and windows of reset risk.
+
+Dates and timezone-free datetimes use Europe/London. Risk windows include their
+start and exclude their end. Entries live on h; hosts with compute-token relay
+there over SSH, like g-temp.
+"""
+import argparse
+import datetime as dt
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+import uuid
+from zoneinfo import ZoneInfo
+
+LONDON = ZoneInfo('Europe/London')
+PROVIDERS = ('claude', 'codex')
+
+
+def when(text):
+    try:
+        value = dt.datetime.fromisoformat(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f'{text!r} is not an ISO datetime or date')
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=LONDON)
+    return value.astimezone(dt.timezone.utc)
+
+
+def save(entries, path):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix('.tmp')
+    tmp.write_text(json.dumps(entries, indent=1) + '\n')
+    tmp.replace(path)
+
+
+def load(path=None, now=None):
+    path = Path(path or Path.home() / '.cache/genv/compute-resets.json')
+    now = now or dt.datetime.now(dt.timezone.utc)
+    try:
+        entries = json.loads(path.read_text())
+    except FileNotFoundError:
+        return []
+    if not isinstance(entries, list):
+        raise ValueError('reset entries must be a list')
+    kept = [e for e in entries if e['kind'] != 'point'
+            or dt.datetime.fromisoformat(e['at']) > now - dt.timedelta(days=7)]
+    if kept != entries:
+        save(kept, path)
+    return kept
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    commands = parser.add_subparsers(dest='command')
+    add = commands.add_parser('add')
+    add.add_argument('provider', choices=PROVIDERS)
+    add.add_argument('when', nargs='?', type=when)
+    add.add_argument('--from', dest='start', type=when)
+    add.add_argument('--to', dest='end', type=when)
+    add.add_argument('--note', default='')
+    remove = commands.add_parser('rm')
+    remove.add_argument('id')
+    args = parser.parse_args(argv)
+    if args.command == 'add':
+        if args.when is not None:
+            if args.start is not None or args.end is not None:
+                parser.error('give WHEN or --from and --to, not both')
+        elif args.start is None or args.end is None:
+            parser.error('give WHEN or both --from and --to')
+        elif args.end <= args.start:
+            parser.error('--to must be after --from')
+    if Path(os.path.expanduser('~/.config/genv/compute-token')).exists():
+        return subprocess.call(['ssh', 'h', 'g-reset',
+                                *(shlex.quote(a) for a in (argv if argv is not None else sys.argv[1:]))])
+    path = Path.home() / '.cache/genv/compute-resets.json'
+    now = dt.datetime.now(dt.timezone.utc)
+    try:
+        entries = load(path, now)
+        if args.command == 'add':
+            entry = {'id': uuid.uuid4().hex[:8], 'provider': args.provider,
+                     'kind': 'point' if args.when else 'window', 'note': args.note,
+                     'added_at': now.isoformat()}
+            entry.update({'at': args.when.isoformat()} if args.when else
+                         {'from': args.start.isoformat(), 'to': args.end.isoformat()})
+            entries.append(entry)
+            save(entries, path)
+        elif args.command == 'rm':
+            kept = [e for e in entries if e['id'] != args.id]
+            if len(kept) == len(entries):
+                parser.error(f'unknown reset id: {args.id}')
+            entries = kept
+            save(entries, path)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        parser.error(str(exc))
+    for entry in entries:
+        span = entry['at'] if entry['kind'] == 'point' else f"{entry['from']} to {entry['to']}"
+        print(f"{entry['id']} {entry['provider']} {entry['kind']} {span}"
+              + (f" ({entry['note']})" if entry.get('note') else ''))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
