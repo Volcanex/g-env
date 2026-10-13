@@ -109,8 +109,10 @@ class TemperatureTests(unittest.TestCase):
         self.assertEqual(temperature.provider('claude', now=NOW, path=self.write([row('claude', 40, 6)]), mode_path=none)[0], 'EBURN')
         self.assertNotEqual(temperature.provider('claude', now=NOW, path=self.write([row('claude', 8, 6)]), mode_path=none)[0], 'EBURN')
         self.assertNotEqual(temperature.provider('claude', now=NOW, path=self.write([row('claude', 40, 48)]), mode_path=none)[0], 'EBURN')
-        self.assertEqual(temperature.provider('codex', now=NOW, path=self.write([row('codex', 60, 48)]), mode_path=none)[0], 'EBURN')
-        self.assertEqual(temperature.provider('codex', now=NOW, path=self.write([row('codex', 45, 48)]), mode_path=none)[0], 'BURN')
+        for left, hours, word in ((80, 168, 'EBURN'), (70, 168, 'BURN'), (55, 84, 'EBURN'), (45, 84, 'BURN'),
+                                  (30, 24, 'EBURN'), (20, 24, 'BURN')):
+            got = temperature.provider('codex', now=NOW, path=self.write([row('codex', left, hours)]), mode_path=none)[0]
+            self.assertEqual(got == 'EBURN', word == 'EBURN', (left, hours, got))
         self.assertEqual(temperature.codex_effort('medium', now=NOW, path=self.write([row('codex', 60, 48)]), mode_path=none), 'xhigh')
 
 

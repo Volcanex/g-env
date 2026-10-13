@@ -19,7 +19,8 @@ its own; `g-temp claude burn` gets there any time.
 
 EBURN sits above BURN: the weekly window resets (at the earlier of the known and
 reported reset) within EBURN_HOURS with more than EBURN_LEFT percent left, so what
-is left is about to be wasted, or holds more than EBURN_ABOVE percent. Spend it on
+is left is about to be wasted, or holds more than its EBURN_ABOVE step for the time
+left (Codex: a curve from 75% a week out through 50% at half a week to 25% a day out). Spend it on
 anything useful, as wide as possible. `g-temp codex eburn` forces it.
 """
 import datetime as dt
@@ -32,8 +33,10 @@ GATED = {'COLD', 'FREEZING'}
 WORDS = ('EBURN',) + tuple(w for _, w in TEMPERATURES)
 EBURN_HOURS = 12
 EBURN_LEFT = 10.0
-# Above this much left a provider is EBURN outright. Codex is cancelled at the end of October 2026.
-EBURN_ABOVE = {'codex': 50.0}
+# (percent a week out, exponent): above pct * (hours to reset / 168) ** exponent left a provider is
+# EBURN outright; 0.57 puts Codex at 75/50/25% a week, half a week and a day out. Codex is
+# cancelled at the end of October 2026.
+EBURN_ABOVE = {'codex': (75.0, 0.57)}
 SPEEDS = ('FAST', 'NORMAL', 'SLOW')
 PROVIDERS = ('claude', 'codex')
 CLAUDE_BURN_WALL = 5.0
@@ -128,14 +131,22 @@ def wall(quotas, name, now):
     return 0
 
 
+def eburn_above(name, hours):
+    """Percent left above which the provider is EBURN with this many hours to its weekly reset."""
+    if name not in EBURN_ABOVE:
+        return 100.0
+    pct, exponent = EBURN_ABOVE[name]
+    return pct * (min(max(hours, 0), 168) / 168) ** exponent
+
+
 def expiring(quotas, name, now):
-    """True when the weekly window resets within EBURN_HOURS with more than EBURN_LEFT% left, or holds more than EBURN_ABOVE."""
+    """True when the weekly window resets within EBURN_HOURS with more than EBURN_LEFT% left, or holds more than eburn_above."""
     for q in quotas:
         if q.get('provider') == name and q.get('window_hours', 0) >= 168 and q.get('remaining_pct') is not None:
             left = (dt.datetime.fromisoformat(q.get('effective_resets_at') or q['resets_at']) - now).total_seconds()
             if 0 < left <= EBURN_HOURS * 3600 and q['remaining_pct'] > EBURN_LEFT:
                 return True
-            if q['remaining_pct'] > EBURN_ABOVE.get(name, 100):
+            if q['remaining_pct'] > eburn_above(name, left / 3600):
                 return True
     return False
 

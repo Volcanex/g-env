@@ -78,7 +78,7 @@ def quota(now, target, emergency_window=None, forced=None):
         goal = floor
         if emergency:
             near = hours <= temperature.EBURN_HOURS or forced == 'EBURN'
-            goal = 95 if near else 100 - temperature.EBURN_ABOVE.get('codex', 5)
+            goal = 95 if near else 100 - min(95, temperature.eburn_above('codex', hours))
         return {'floor': floor, 'used': used, 'mode': mode, 'goal': goal,
                 'cap': 10 if emergency else 4, 'window': window, 'hours': hours}, ''
     except (OSError, ValueError, KeyError, TypeError, StopIteration):
