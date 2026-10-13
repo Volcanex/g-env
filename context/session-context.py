@@ -28,6 +28,7 @@ TITLES = {'host': 'Host', 'shared': 'Shared policy', 'conventions': 'Conventions
 MAX_PULSE_ALERTS = 5
 MAX_BRAIN_NOTES = 4
 CONDENSE_OUTDATED, CONDENSE_BACKLOG = 10, 50  # below both, condensation is not worth a session's attention
+STATUS_STALE_MINUTES = 15  # brain-status runs every 5; three missed runs means the board itself is stuck
 PRIORITY = re.compile(r'\b(p0|p1|urgent|warning|alert|broken|overdue|safety|permissions|assent)\b', re.I)
 
 
@@ -134,6 +135,35 @@ def brain_section(text):
     if outdated >= CONDENSE_OUTDATED or backlog >= CONDENSE_BACKLOG:
         lines.append(f'Housekeeping: {backlog} condensation candidates, {outdated} possibly outdated; '
                      'brain-condense when the operator asks or work is light.')
+    return heading + '\n' + '\n'.join(lines) + '\n'
+
+
+def health_section(text, now=None):
+    """What the status board says is broken right now; nothing at all when it is green.
+
+    Reflexes in brain-status have already tried a restart by the time a service
+    shows here, so whatever remains needs an agent or the operator.
+    """
+    if text.startswith('Unavailable'):
+        return ''
+    heading = '## Health'
+    try:
+        board = json.loads(text)
+        checked = dt.datetime.fromisoformat(board['checked_at'])
+        rows = board.get('services', []) + board.get('dependencies', [])
+    except (ValueError, KeyError, TypeError):
+        return f'{heading}\nStatus board unreadable: /api/status.\n'
+    lines = []
+    age = ((now or dt.datetime.now(dt.timezone.utc)) - checked).total_seconds() / 60
+    if age > STATUS_STALE_MINUTES:
+        lines.append(f'Status board last ran {age:.0f} min ago: brain-status.timer is stuck.')
+    for state in ('down', 'warn'):
+        bad = [f"{r['id']} ({r.get('detail', '')[:60]})" for r in rows if r.get('state') == state]
+        if bad:
+            lines.append(f'{state.title()}: ' + ', '.join(bad) + '.')
+    if not lines:
+        return ''
+    lines.append('Tell the operator at the start; fix what is in your scope.')
     return heading + '\n' + '\n'.join(lines) + '\n'
 
 
@@ -324,14 +354,17 @@ def context(home, cwd, pulse=True, project='', task=''):
     parts.append(guarded('models', models_section))
     if pulse:
         query = urllib.parse.urlencode({'cwd': cwd[:4096], 'project': project[:100], 'task': task[:1000]})
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
             pulse_future = pool.submit(fetch, '/api/pulse/page')
             orientation_future = pool.submit(fetch, '/api/orient?' + query)
+            status_future = pool.submit(fetch, '/api/status')
             pulse_text = pulse_future.result()
             orientation_text = orientation_future.result()
+            status_text = status_future.result()
+        parts.append(guarded('health', lambda: health_section(status_text)))
         parts.append(guarded('pulse', lambda: pulse_section(pulse_text)))
         parts.append(guarded('brain', lambda: brain_section(orientation_text)))
-    return '\n'.join(parts)
+    return '\n'.join(part for part in parts if part)
 
 
 def main():

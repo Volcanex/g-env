@@ -98,7 +98,7 @@ class ContextTests(unittest.TestCase):
                        '**On `genv`** (22 notes, relevance first):\n'
                        + ''.join(f'- `findings/a-fairly-long-note-slug-number-{n}-about-genv-wiring`: Title, lead\n' for n in range(9))
                        + '… 13 relevant note(s) omitted.\n\n**Writing is part of the work.** manual')
-        with patch.object(context, 'fetch', side_effect=lambda path: pulse if 'pulse' in path else orientation):
+        with patch.object(context, 'fetch', side_effect=lambda path: pulse if 'pulse' in path else 'Unavailable: down' if 'status' in path else orientation):
             output = context.context(self.home, '/home/gabriel/genv')
         self.assertLessEqual(len(output), context.TARGET_CHARS, f'context is {len(output)} chars')
         self.assertNotIn('Context unavailable', output)
@@ -122,6 +122,19 @@ class ContextTests(unittest.TestCase):
         self.assertIn('+3 more priority entries', text)
         self.assertIn('none flagged', context.pulse_section('- calm\n'))
         self.assertIn('Unavailable', context.pulse_section('Unavailable: down'))
+
+    def test_health_names_only_what_is_broken(self):
+        now = context.dt.datetime(2026, 10, 13, 12, 0, tzinfo=context.dt.timezone.utc)
+        def board(minutes_ago, *rows):
+            checked = (now - context.dt.timedelta(minutes=minutes_ago)).isoformat()
+            return json.dumps({'checked_at': checked, 'services': [dict(r) for r in rows], 'dependencies': []})
+        self.assertEqual(context.health_section(board(3, {'id': 'a', 'state': 'up', 'detail': 'HTTP 200'},
+                                                      {'id': 'b', 'state': 'paused', 'detail': 'stopped'}), now), '')
+        text = context.health_section(board(3, {'id': 'period-api', 'state': 'down', 'detail': 'HTTP 502'}), now)
+        self.assertIn('Down: period-api (HTTP 502).', text)
+        self.assertIn('stuck', context.health_section(board(40), now))
+        self.assertEqual(context.health_section('Unavailable: down', now), '')
+        self.assertIn('unreadable', context.health_section('<html>', now))
 
     def test_brain_is_one_line_plus_actionable_housekeeping(self):
         quiet = '## Brain\n12 notes: finding 12\n\nHousekeeping: 3 condensation candidate(s), **1 possibly outdated**, 2 drift.\n\n**Writing** manual'
