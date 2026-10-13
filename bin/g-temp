@@ -43,7 +43,7 @@ def main(argv=None):
     parser.add_argument('duration', nargs='?', type=hours)
     args = parser.parse_args(argv)
     if Path(os.path.expanduser('~/.config/genv/compute-token')).exists():
-        return subprocess.call(['ssh', 'h', 'g-temp', *(argv if argv is not None else sys.argv[1:])])
+        return subprocess.call(['ssh', 'h', '.local/bin/g-temp', *(argv if argv is not None else sys.argv[1:])])
     if args.provider and args.temp:
         speed = (temperature.overrides().get(args.provider) or {}).get('speed')
         temp = None if args.temp == 'OFF' else args.temp

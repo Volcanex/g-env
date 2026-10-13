@@ -89,7 +89,7 @@ class ResetTests(unittest.TestCase):
         with mock.patch.object(reset.subprocess, 'call', return_value=7) as call:
             self.assertEqual(reset.main(args), 7)
         command = call.call_args.args[0]
-        self.assertEqual(command[:3], ['ssh', 'h', 'g-reset'])
+        self.assertEqual(command[:3], ['ssh', 'h', '.local/bin/g-reset'])
         self.assertEqual(shlex.split(' '.join(command[3:])), args)
         self.assertFalse(self.path.exists())
 

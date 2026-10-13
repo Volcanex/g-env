@@ -75,7 +75,7 @@ def main(argv=None):
         elif args.end <= args.start:
             parser.error('--to must be after --from')
     if Path(os.path.expanduser('~/.config/genv/compute-token')).exists():
-        return subprocess.call(['ssh', 'h', 'g-reset',
+        return subprocess.call(['ssh', 'h', '.local/bin/g-reset',
                                 *(shlex.quote(a) for a in (argv if argv is not None else sys.argv[1:]))])
     path = Path.home() / '.cache/genv/compute-resets.json'
     now = dt.datetime.now(dt.timezone.utc)

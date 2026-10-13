@@ -20,7 +20,6 @@ import sys
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / 'context'))
-from instance import instance
 import temperature
 
 KINDS = {
@@ -87,6 +86,7 @@ def quota(now, target, emergency_window=None, forced=None):
 
 
 def repos():
+    from instance import instance
     manifest = os.environ.get('G_EBURN_MANIFEST') or instance('manifest')
     data = read_json(Path(manifest), {}) if manifest else {}
     root = path('REPOS', '/home/gabriel').resolve()
@@ -292,6 +292,11 @@ def main(argv=None):
     add.add_argument('--sandbox', choices=['read-only', 'workspace-write', 'danger-full-access'], default='read-only')
     add.add_argument('--label')
     args = parser.parse_args(argv)
+    # Eburn runs on h; hosts that pull compute state from h (compute-token) relay there, like g-temp.
+    if Path(os.path.expanduser('~/.config/genv/compute-token')).exists():
+        import shlex
+        return subprocess.call(['ssh', 'h', '.local/bin/g-eburn',
+                                *(shlex.quote(a) for a in (argv if argv is not None else sys.argv[1:]))])
     root = path('DIR', Path.home() / '.cache/genv/eburn')
     readonly = args.command in ('status', 'list') or getattr(args, 'dry_run', False)
     lock = None
