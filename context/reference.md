@@ -79,10 +79,11 @@ one or two cheap workers; use more when scope warrants it. At Hot or Burn, spare
 quota goes wider before it goes stronger: up to 4 (Hot) or 6 (Burn) parallel Claude
 workers, and up to 6 (Hot) or 10 (Burn) parallel Codex jobs. Codex allowance expires
 unannounced (early resets) and goes to waste, so at Codex Burn every bounded job
-that can leave Claude goes to Sol or Astra, wide. EBURN (temperature.py: the window
-expires within 12h with over 10% left, or Codex holds more than a curve from 75% a week
-out through 50% at half a week to 25% a day out, until the end-October cancellation) moves all work without taste off Claude, lifts Codex effort two levels
-and lets `g-eburn` run its own backlog 10 wide;
+that can leave Claude goes to Sol or Astra, wide. EBURN (temperature.py: Codex holds more
+than a curve from 75% a week out through 50% at half a week to 25% a day out, until the
+end-October cancellation; Claude only within 12h of reset with over 10% left) moves all
+work without taste off Claude, lifts Codex effort two levels and lets `g-eburn` spend
+down to the same curve, 10 wide;
 several explorers on different angles, two independent attempts at an important
 build (keep the better), and a separate verifier on every build. Wide Claude-only
 sweeps (private data, connectors) fan out across `haiku-xhigh-worker`. Give each a question, bounded inputs, read-only scope or exclusive files, a

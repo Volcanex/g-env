@@ -51,36 +51,24 @@ def save(root, state):
     tmp.replace(root / 'state.json')
 
 
-def quota(now, target, emergency_window=None, forced=None):
+def quota(now, forced=None):
+    """Codex's place against the EBURN curve: dispatch while used is below the aim."""
     pace = path('PACE', Path.home() / '.cache/genv/compute-pace.json')
     try:
         data = read_json(pace, {})
         if (now - stamp(data['computed_at'])).total_seconds() > 3600:
             return None, 'pace data older than 1h; no dispatch'
         row = next(q for q in data['quotas'] if q.get('provider') == 'codex' and q.get('window_hours') == 168)
-        reset = stamp(row.get('effective_resets_at') or row['resets_at'])
-        # Early-reset forecasts shorten the deadline, not the actual window's start.
-        start = stamp(row['resets_at']) - dt.timedelta(hours=168)
-        hours = (reset - now).total_seconds() / 3600
+        hours = (stamp(row.get('effective_resets_at') or row['resets_at']) - now).total_seconds() / 3600
         if hours <= 0:
             return None, 'Codex reset has passed; waiting for fresh window data'
-        elapsed = max(0, (now - start).total_seconds() / 3600)
-        floor = target * min(1, elapsed / (24 if row.get('reset_risk') else 84))
         remaining = float(row['remaining_pct'])
         if not math.isfinite(remaining) or not 0 <= remaining <= 100:
             raise ValueError('invalid remaining percentage')
-        window = row['resets_at']
-        # EBURN (temperature.expiring, or a g-temp override) is the emergency; once in it, keep going to 5% left.
-        expiring = temperature.expiring([row], 'codex', now) or forced == 'EBURN'
-        emergency = remaining > 5 and (expiring or (emergency_window == window and hours <= temperature.EBURN_HOURS))
+        # The same curve that makes the statusline read EBURN; a g-temp override spends to 5% left.
+        goal = 95 if forced == 'EBURN' else 100 - min(95, temperature.eburn_above('codex', hours))
         used = 100 - remaining
-        mode = 'emergency' if emergency else 'floor' if used < floor else 'idle'
-        goal = floor
-        if emergency:
-            near = hours <= temperature.EBURN_HOURS or forced == 'EBURN'
-            goal = 95 if near else 100 - min(95, temperature.eburn_above('codex', hours))
-        return {'floor': floor, 'used': used, 'mode': mode, 'goal': goal,
-                'cap': 10 if emergency else 4, 'window': window, 'hours': hours}, ''
+        return {'used': used, 'goal': goal, 'mode': 'eburn' if used < goal else 'idle', 'cap': 10, 'hours': hours}, ''
     except (OSError, ValueError, KeyError, TypeError, StopIteration):
         return None, 'Codex 7-day pace data missing or invalid; no dispatch'
 
@@ -92,7 +80,7 @@ def repos():
     root = path('REPOS', '/home/gabriel').resolve()
     found = {}
     for row in data.get('projects', []) + data.get('system', []):
-        if not row.get('managed'):
+        if not row.get('managed') or row.get('status') in ('fossil', 'deprecated'):
             continue
         names = [row['id'], row.get('url', '').rstrip('/').rsplit('/', 1)[-1].removesuffix('.git')]
         for name in names:
@@ -193,7 +181,7 @@ def complete(root, state, now):
 
 def describe(q, reason, state, disabled):
     mode = 'disabled' if disabled else q['mode'] if q else 'idle'
-    numbers = f"floor {q['floor']:.1f}%, used {q['used']:.1f}%, aim {q['goal']:.1f}%" if q else reason
+    numbers = f"used {q['used']:.1f}%, aim {q['goal']:.1f}%" if q else reason
     print(f"{mode}: {numbers}; running {len(state['running'])}; queue {len(state['queue'])}")
     if disabled:
         print(disabled)
@@ -202,7 +190,7 @@ def describe(q, reason, state, disabled):
 def run(args, root, state, now):
     override = temperature.state('codex', now=now, path=path('PACE', Path.home() / '.cache/genv/compute-pace.json'),
                                  mode_path=path('MODE', Path.home() / '.cache/genv/compute-mode.json'))['temp_override']
-    q, reason = quota(now, state['target'], state.get('emergency_window'), override)
+    q, reason = quota(now, override)
     disabled = 'eburn is off' if not state['enabled'] else f'Codex override is {override}' if override in ('COLD', 'FREEZING') else ''
     if args.command == 'status':
         describe(q, reason, state, disabled)
@@ -222,8 +210,6 @@ def run(args, root, state, now):
     describe(q, reason, state, '')
     if q['mode'] == 'idle':
         return
-    if q['mode'] == 'emergency':
-        state['emergency_window'] = q['window']
     config = providers()
     config_path = root / 'providers.json'
     if not args.dry_run:
@@ -271,20 +257,12 @@ def run(args, root, state, now):
             save(root, state)
 
 
-def percentage(text):
-    number = float(text)
-    if not math.isfinite(number) or not 0 <= number <= 100:
-        raise argparse.ArgumentTypeError('target must be between 0 and 100')
-    return number
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('tick').add_argument('--dry-run', action='store_true')
     for name in ('status', 'list', 'on', 'off'):
         commands.add_parser(name)
-    commands.add_parser('target').add_argument('pct', type=percentage)
     add = commands.add_parser('add')
     add.add_argument('brief')
     add.add_argument('--role', default='review')
@@ -305,7 +283,7 @@ def main(argv=None):
             root.mkdir(parents=True, exist_ok=True)
             lock = (root / 'lock').open('a')
             fcntl.flock(lock, fcntl.LOCK_EX)
-        state = read_json(root / 'state.json', {'enabled': True, 'target': 50, 'queue': [], 'running': [], 'last': {}})
+        state = read_json(root / 'state.json', {'enabled': True, 'queue': [], 'running': [], 'last': {}})
         now = dt.datetime.now(dt.timezone.utc)
         if args.command in ('tick', 'status'):
             run(args, root, state, now)
@@ -323,8 +301,6 @@ def main(argv=None):
                 state['queue'].append({'key': key, 'source': 'queue', 'repo': directory.name, 'kind': f'queue-{key}',
                                        'role': args.role, 'sandbox': args.sandbox, 'workdir': str(directory),
                                        'label': args.label or f'eburn queue {key}', 'brief': args.brief})
-            elif args.command == 'target':
-                state['target'] = args.pct
             else:
                 state['enabled'] = args.command == 'on'
             save(root, state)

@@ -27,7 +27,6 @@ NOW = dt.datetime(2026, 10, 13, 12, tzinfo=dt.timezone.utc)
 
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
-    monkeypatch.setattr(eb.temperature, 'EBURN_ABOVE', {})
     root = tmp_path / 'eburn'
     pace = tmp_path / 'pace.json'
     repos = tmp_path / 'repos'
@@ -42,7 +41,7 @@ def setup(tmp_path, monkeypatch):
     monkeypatch.setattr(eb.temperature, 'state', lambda *a, **kw: {'temp_override': None})
     mock = Mock(side_effect=AssertionError('unexpected subprocess'))
     monkeypatch.setattr(eb.subprocess, 'run', mock)
-    state = {'enabled': True, 'target': 50, 'queue': [], 'running': [], 'last': {}}
+    state = {'enabled': True, 'queue': [], 'running': [], 'last': {}}
     return SimpleNamespace(root=root, pace=pace, repos=repos, state=state, mock=mock)
 
 
@@ -72,40 +71,26 @@ def fake_jobs(s):
     s.mock.side_effect = dispatch
 
 
-@pytest.mark.parametrize('elapsed,risk,expected', [(0, None, 0), (42, None, 25), (84, None, 50),
-                                                 (120, None, 50), (12, 'early', 25), (24, 'early', 50)])
-def test_floor(setup, elapsed, risk, expected):
-    write_pace(setup, elapsed=elapsed, risk=risk)
-    q, _ = eb.quota(NOW, 50)
-    assert q['floor'] == expected
-
-
-def test_interactive_usage_and_custom_target(setup):
-    write_pace(setup, remaining=70)
-    q, _ = eb.quota(NOW, 50)
-    assert q['mode'] == 'idle'
-    q, _ = eb.quota(NOW, 80)
-    assert q['mode'] == 'floor' and q['floor'] == 40
-
-
-def test_effective_reset_does_not_move_window_start(setup):
-    write_pace(setup, elapsed=12, risk='early', effective=NOW + dt.timedelta(hours=10))
-    q, _ = eb.quota(NOW, 50)
-    assert q['floor'] == 25
-    assert q['mode'] == 'emergency' and q['goal'] == 95 and q['cap'] == 10
-
-
-@pytest.mark.parametrize('remaining,latched,mode', [(11, False, 'emergency'), (10, False, 'idle'),
-                                                   (9, True, 'emergency'), (5, True, 'idle')])
-def test_emergency_threshold_and_latch(setup, remaining, latched, mode):
-    row = write_pace(setup, elapsed=156, remaining=remaining)
-    q, _ = eb.quota(NOW, 50, row['resets_at'] if latched else None)
+@pytest.mark.parametrize('elapsed,remaining,mode', [(0, 80, 'eburn'), (0, 70, 'idle'), (84, 55, 'eburn'),
+                                                   (84, 45, 'idle'), (144, 30, 'eburn'), (144, 20, 'idle'),
+                                                   (166, 7, 'eburn'), (166, 5, 'idle')])
+def test_spends_down_to_the_eburn_curve(setup, elapsed, remaining, mode):
+    write_pace(setup, elapsed=elapsed, remaining=remaining)
+    q, _ = eb.quota(NOW)
     assert q['mode'] == mode
+    assert abs(q['goal'] - (100 - min(95, eb.temperature.eburn_above('codex', 168 - elapsed)))) < 1e-9
 
 
-def test_old_latch_not_reused(setup):
-    write_pace(setup, elapsed=156, remaining=8)
-    assert eb.quota(NOW, 50, 'old window')[0]['mode'] == 'idle'
+def test_effective_reset_brings_the_curve_forward(setup):
+    write_pace(setup, elapsed=12, remaining=70, effective=NOW + dt.timedelta(hours=10))
+    q, _ = eb.quota(NOW)
+    assert q['mode'] == 'eburn' and q['goal'] > 80 and q['cap'] == 10
+
+
+def test_forced_eburn_spends_to_five_percent(setup):
+    write_pace(setup, elapsed=0, remaining=10)
+    assert eb.quota(NOW)[0]['mode'] == 'idle'
+    assert eb.quota(NOW, 'EBURN')[0]['goal'] == 95
 
 
 @pytest.mark.parametrize('case', ['missing', 'stale', 'expired', 'malformed'])
@@ -173,11 +158,12 @@ def test_dry_run_no_writes(setup, capsys):
     run(setup, dry=True)
     setup.mock.assert_not_called()
     assert not setup.root.exists()
-    assert capsys.readouterr().out.count('would dispatch:') == 4
+    assert capsys.readouterr().out.count('would dispatch:') == 10
 
 
-@pytest.mark.parametrize('elapsed,cap', [(42, 4), (160, 10)])
-def test_dispatch_caps_and_no_repo_collisions(setup, elapsed, cap):
+@pytest.mark.parametrize('elapsed', [42, 160])
+def test_dispatch_caps_and_no_repo_collisions(setup, elapsed):
+    cap = 10
     write_pace(setup, elapsed=elapsed)
     fake_jobs(setup)
     run(setup)
@@ -219,19 +205,19 @@ def test_completion_report_and_journal(setup):
     eb.complete(setup.root, setup.state, NOW)
     assert Path(job['report']).read_text().endswith('FINDINGS: 1\n')
     events = [json.loads(line) for line in (setup.root / 'runs.jsonl').read_text().splitlines()]
-    assert [e['event'] for e in events] == ['dispatch'] * 4 + ['completion']
+    assert [e['event'] for e in events] == ['dispatch'] * 10 + ['completion']
     assert events[-1]['findings'] == 1
-    assert len(setup.state['running']) == 3
+    assert len(setup.state['running']) == 9
 
 
 def test_cli_queue_controls(setup, capsys):
     assert eb.main(['add', 'Review code', '--workdir', str(setup.repos / 'repo0'), '--sandbox', 'workspace-write', '--label', 'my work']) == 0
     assert eb.main(['list']) == 0
     assert 'my work [review, workspace-write]' in capsys.readouterr().out
-    for command in (['off'], ['target', '65'], ['on']):
+    for command in (['off'], ['on']):
         assert eb.main(command) == 0
     state = json.loads((setup.root / 'state.json').read_text())
-    assert state['enabled'] and state['target'] == 65
+    assert state['enabled']
     assert state['queue'][0]['sandbox'] == 'workspace-write'
 
 
@@ -259,7 +245,7 @@ def test_fast_completion_and_failure_saved(setup):
     eb.complete(setup.root, setup.state, NOW)
     assert not setup.state['running']
     events = [json.loads(line) for line in (setup.root / 'runs.jsonl').read_text().splitlines()]
-    assert len(events) == 8
+    assert len(events) == 20
     assert events[-1]['exit'] == 3 and events[-1]['findings'] is None
 
 
@@ -279,7 +265,8 @@ def test_rotation_only_managed_existing_repos(setup):
     manifest = eb.path('MANIFEST', '')
     manifest.write_text(json.dumps({'projects': [
         {'id': 'repo0', 'managed': False}, {'id': 'missing', 'managed': True},
-        {'id': 'renamed', 'url': 'https://example.test/owner/repo1', 'managed': True}]}))
+        {'id': 'renamed', 'url': 'https://example.test/owner/repo1', 'managed': True},
+        {'id': 'repo2', 'managed': True, 'status': 'fossil'}, {'id': 'repo3', 'managed': True, 'status': 'deprecated'}]}))
     assert eb.repos() == {'renamed': setup.repos / 'repo1'}
 
 

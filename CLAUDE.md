@@ -41,7 +41,7 @@ call before adding their platform-specific configs.
   Its TUI defaults show context, model, project, branch, allowance and title.
   Native Codex cannot display Claude's custom pace and Brain-health widgets.
   Local config does not configure hosted ChatGPT Work.
-- `bin/g-eburn`: automatic Codex-only quota burning, queued work and read-only ticket/repo reviews; state and reports in `~/.cache/genv/eburn/`.
+- `bin/g-eburn`: spends Codex down to the EBURN curve on queued work and read-only ticket/repo reviews (live repos only); state and reports in `~/.cache/genv/eburn/`.
 - `bin/compute-usage`: on-demand subscription quota snapshots. `--record`
   appends sanitized observations to the user's private cache, with no model turn.
   Claude data comes from its statusline cache and may be stale. Codex data comes

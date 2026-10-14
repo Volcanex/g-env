@@ -140,11 +140,12 @@ def eburn_above(name, hours):
 
 
 def expiring(quotas, name, now):
-    """True when the weekly window resets within EBURN_HOURS with more than EBURN_LEFT% left, or holds more than eburn_above."""
+    """True when the weekly window holds more than eburn_above, or, for a provider with no curve, resets
+    within EBURN_HOURS with more than EBURN_LEFT% left."""
     for q in quotas:
         if q.get('provider') == name and q.get('window_hours', 0) >= 168 and q.get('remaining_pct') is not None:
             left = (dt.datetime.fromisoformat(q.get('effective_resets_at') or q['resets_at']) - now).total_seconds()
-            if 0 < left <= EBURN_HOURS * 3600 and q['remaining_pct'] > EBURN_LEFT:
+            if name not in EBURN_ABOVE and 0 < left <= EBURN_HOURS * 3600 and q['remaining_pct'] > EBURN_LEFT:
                 return True
             if q['remaining_pct'] > eburn_above(name, left / 3600):
                 return True
