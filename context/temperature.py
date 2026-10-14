@@ -152,6 +152,20 @@ def expiring(quotas, name, now):
     return False
 
 
+def line(name, home=None, now=None, path=None):
+    """Percent left the EBURN curve allows the provider now, or None without a curve or a weekly reading."""
+    if name not in EBURN_ABOVE:
+        return None
+    try:
+        data = json.loads(Path(path or cache(home) / 'compute-pace.json').read_text())
+        now = now or dt.datetime.now(dt.timezone.utc)
+        q = next(q for q in data['quotas'] if q.get('provider') == name and q.get('window_hours', 0) >= 168)
+        left = (dt.datetime.fromisoformat(q.get('effective_resets_at') or q['resets_at']) - now).total_seconds()
+        return eburn_above(name, left / 3600)
+    except Exception:
+        return None
+
+
 def measured(name, home=None, now=None, max_age=3 * 3600, path=None):
     """(word, ratio, window id) as measured, or None when pace data is missing or stale."""
     try:
@@ -185,7 +199,7 @@ def state(name, home=None, now=None, path=None, mode_path=None):
     return {'provider': name, 'measured': m[0] if m else None, 'ratio': m[1] if m else None,
             'window': m[2] if m else None, 'temp': o.get('temp') or (m[0] if m else None),
             'temp_override': o.get('temp'), 'speed': o.get('speed') or 'NORMAL',
-            'expires_at': o.get('expires_at')}
+            'expires_at': o.get('expires_at'), 'eburn_line': line(name, home, now, path)}
 
 
 def provider(name, home=None, now=None, path=None, mode_path=None):
