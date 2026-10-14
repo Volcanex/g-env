@@ -17,7 +17,7 @@ def _c(hexcode):
     return f"\033[38;2;{int(hexcode[0:2],16)};{int(hexcode[2:4],16)};{int(hexcode[4:6],16)}m"
 
 BLUE, GREEN, YEL, AMB, RED = _c("6ab0ff"), _c("4ade80"), _c("ffd60a"), _c("ff9f0a"), _c("ff5347")
-MAG = _c("e879f9")
+BLUE = _c("70b8ff")  # g-design --info-text, as EBURN shows on the compute page
 ORG = _c("ff6a00")
 
 def scale(value, bands):
@@ -118,7 +118,7 @@ def rename_tmux_window(title):
 # EBURN = expiring soon with plenty left, spend everything. BURN = plenty spare,
 # spend it. FREEZING = nearly out, be careful. EBURN has no headroom threshold.
 TEMPERATURES = (
-    (float("inf"), "EBURN", MAG),
+    (float("inf"), "EBURN", BLUE),
     (2.5, "BURN", BLUE),
     (1.6, "HOT", GREEN),
     (1.15, "WARM", YEL),
