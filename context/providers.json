@@ -213,6 +213,10 @@
     "ui": {
       "why": "UI work is design work: --domain ui ranks it as the design role.",
       "as_role": "design"
+    },
+    "web": {
+      "why": "Driving sites, comparing prices or checking links is research, not gather: --domain web ranks it as research, so Luna never gets it.",
+      "as_role": "research"
     }
   }
 }

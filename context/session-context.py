@@ -278,6 +278,9 @@ def pace_section(home, now=None):
         prices = model['prices']
         picks = {}
         for role, cells in model['grid'].items():
+            domain = model['domains'].get(role.partition(' ')[2]) if ' ' in role else None
+            if domain and cells['normal'] == model['grid'].get(domain['as_role'], {}).get('normal'):
+                continue
             picks.setdefault(cells['normal'], []).append(role)
         lines[:0] = ['price: ' + ', '.join(f"{name} {p['lambda']:.1f} ({p['temp'].title()}"
                                           + (f", r {p['r']:.1f}" if name == 'claude' else '') + ')'

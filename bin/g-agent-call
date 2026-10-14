@@ -14,6 +14,7 @@ the answer when the job ends inside the wait window (default 570s), otherwise on
 """
 import argparse
 import datetime as dt
+import json
 import os
 import secrets
 import shlex
@@ -93,7 +94,8 @@ def main(argv=None):
     parser.add_argument('--allow-claude', action='store_true')
     parser.add_argument('--stakes', choices=['routine', 'normal', 'important', 'critical'], default='normal')
     parser.add_argument('--claude-only', action='store_true')
-    parser.add_argument('--domain', choices=['ui'], help='ui work runs on Claude at important stakes or above')
+    parser.add_argument('--domain', choices=sorted(json.loads((HERE.parent / 'context/providers.json').read_text())['value_domains']),
+                        help='ui ranks as design (Claude), web (driving sites, prices, links) as research (never Luna)')
     parser.add_argument('--sandbox', choices=['read-only', 'workspace-write', 'danger-full-access'])
     parser.add_argument('--wait', metavar='JOBDIR')
     parser.add_argument('--window', type=int, default=570)

@@ -263,7 +263,7 @@ class ValueTests(unittest.TestCase):
         result = value.snapshot(**self.paths)
         self.assertEqual(result['computed_at'], NOW.isoformat())
         self.assertEqual(result['prices'], value.prices(**self.paths))
-        self.assertEqual(len(result['grid']), 10)
+        self.assertEqual(len(result['grid']), 11)
         for row, grid in result['grid'].items():
             role, _, domain = row.partition(' ')
             for stakes, point_id in grid.items():
@@ -308,7 +308,7 @@ class ValueTests(unittest.TestCase):
         data = json.loads(result.stdout)
         self.assertEqual((data['stakes'], data['pick']['provider']), ('important', 'claude'))
         grid = subprocess.run([str(REPO / 'bin/g-pick'), '--grid'], env=env, capture_output=True, text=True, check=True)
-        self.assertEqual(len(grid.stdout.splitlines()), 11)
+        self.assertEqual(len(grid.stdout.splitlines()), 12)
         self.assertIn('critical', grid.stdout)
         bad = subprocess.run([str(REPO / 'bin/g-pick'), '--role', 'unknown'], env=env, capture_output=True, text=True)
         self.assertEqual(bad.returncode, 2)
@@ -370,6 +370,19 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(order[1], next(i for i in ranked if i['provider'] != ranked[0]['provider']))
         self.assertEqual(len(order), 3)
         self.assertEqual(len({i['id'] for i in order}), 3)
+
+    def test_eburn_retry_changes_model_not_lifted_effort(self):
+        temperature.set_override('codex', temp='EBURN', path=self.mode)
+        args = argparse.Namespace(role='gather', stakes='normal', allow_claude=False, claude_only=False)
+        order = runner.provider_order(args, self.config, self.config_path, self.pace)
+        runs = [(i['spec'], runner.lifted(i['spec'], i['effort'], self.pace)) for i in order]
+        self.assertEqual(len(runs), len(set(runs)))
+        self.assertNotEqual(order[1]['spec'], order[0]['spec'])
+
+    def test_web_domain_never_ranks_luna(self):
+        ranked = value.rank('gather', 'normal', domain='web', pace_path=self.pace, mode_path=self.mode)
+        self.assertTrue(ranked)
+        self.assertFalse([i for i in ranked if 'luna' in i['spec']])
 
     def test_missing_value_and_value_errors_use_legacy_roles_and_efforts(self):
         expected = [{'spec': i, 'effort': 'high'} for i in self.config['roles']['build']]

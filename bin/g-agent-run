@@ -187,19 +187,35 @@ def quota_low(vendor, config, pace_path):
     return ''
 
 
+def lifted(spec, effort, pace_path):
+    if spec.startswith('codex:'):
+        return temperature.codex_effort(effort, path=pace_path, mode_path=os.environ.get('G_AGENT_MODE'))
+    return effort
+
+
 def provider_order(args, config, config_path, pace_path):
     if 'value' in config:
         try:
             ranked = value.rank(args.role, args.stakes, args.allow_claude, args.claude_only, domain=getattr(args, 'domain', None),
                                 providers_path=config_path, pace_path=pace_path,
                                 mode_path=os.environ.get('G_AGENT_MODE'))
-            if not ranked:
+            # Points that run identically once Codex's temperature lifts their effort are one point;
+            # a retry after a timeout should change model before it changes effort.
+            seen, distinct = set(), []
+            for i in ranked:
+                key = (i['spec'], lifted(i['spec'], i['effort'], pace_path))
+                if key not in seen:
+                    seen.add(key)
+                    distinct.append(i)
+            if not distinct:
                 return []
-            order = [ranked[0]]
-            other = next((i for i in ranked if i['provider'] != ranked[0]['provider']), None)
+            first = distinct[0]
+            order = [first]
+            other = (next((i for i in distinct if i['provider'] != first['provider']), None)
+                     or next((i for i in distinct if i['spec'] != first['spec']), None))
             if other:
                 order.append(other)
-            order += [i for i in ranked if i not in order]
+            order += [i for i in distinct if i not in order]
             return order[:3]
         except Exception:
             pass
@@ -218,7 +234,11 @@ def attempt(spec, args, config, prompt, workdir, pace_path=None, facts=None, poi
     timeout = config.get('timeout_s', {}).get(args.role, 900)
     effort = point['effort'] if point else config.get('effort', {}).get(args.role, 'medium')
     if vendor == 'codex':
+        base = effort
         effort = temperature.codex_effort(effort, path=pace_path, mode_path=os.environ.get('G_AGENT_MODE'))
+        # Each level the temperature adds makes the job slower; the role's timeout was set for its base effort.
+        if base in temperature.LEVELS and effort in temperature.LEVELS:
+            timeout = round(timeout * 1.5 ** max(0, temperature.LEVELS.index(effort) - temperature.LEVELS.index(base)))
     if vendor == 'claude' and not (args.allow_claude or args.claude_only or args.stakes == 'critical'
                                     or value.values_taste(args.role, getattr(args, 'domain', None))):
         t = temperature.provider('claude', path=pace_path, mode_path=os.environ.get('G_AGENT_MODE'))

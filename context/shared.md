@@ -32,7 +32,7 @@ bounded jobs. Build no cross-agent handover or automatic task resumption.
 Staff from the Compute pace data by job shape. Finding on-topic material is
 context-heavy but quality-tolerant: Luna, run hard. Bounded exploring,
 research, building and verifying: Sol and Luna first, with web search: Claude is the protected quota and
-Codex should run out each week. Sonnet when the operator is waiting; UI work runs on Claude, never Sol (`g-pick --role build --domain ui` names the tier); Opus medium for visual fidelity or after a weaker agent fell short. Integrating, deciding and talking with the operator is context-light and
+Codex should run out each week. Sonnet when the operator is waiting; UI work runs on Claude, never Sol (`--domain ui`); site or price browsing is `--domain web`, not Luna; Opus medium for visual fidelity or after a weaker agent fell short. Integrating, deciding and talking with the operator is context-light and
 quality-essential: Opus or better. Trade at most ~5% quality for savings; if a
 task needs all-Opus, use it. When a provider is Hot or Burn, go wider on it (parallel workers, best-of-two, verifiers); wasted Codex is worst. Repeated corrections or frustration mean the models
 are not smart enough: escalate. State the staffing plan before building.
