@@ -24,6 +24,13 @@ fixes, webapp-testing checks browser paths; a missing skill is a wiring problem 
 report. Claim success only on fresh evidence along the user's actual path (build,
 data, state); review worker diffs yourself.
 
+## Writing
+
+Copy people will read never sounds like AI: site and UI copy, emails, posts,
+listings, bios, outreach, anything sent or published. Run the anti-ai-voice skill
+(`ganti score`) on it and lean toward Gabriel's own voice in the register the
+piece needs. Code, commits, internal notes and agent reports are exempt.
+
 ## Staffing
 
 Claude is preferred; Codex is an independent coordinator that Claude may hand

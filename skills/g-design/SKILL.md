@@ -56,6 +56,9 @@ When you need a piece of UI, in strict order:
   CAPS, no all-lowercase affectation.
 - **Em dashes are banned** in all UI copy and code comments. Use a comma,
   a colon or a rewrite; plain hyphens only in technical terms.
+- **Copy goes through anti-ai-voice.** Headlines, body text, empty states
+  and anything else a person reads gets `ganti score`; fix the absolutes and
+  generic tells, and lean toward Gabriel's voice in the page's register.
 - **The middle dot is banned** on the same standing, in every reskin. It
   is a glyph doing a layout job. Separate two facts with a gap off the
   spacing scale, a second column or a new line, or join them with words.
