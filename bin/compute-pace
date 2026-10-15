@@ -236,6 +236,45 @@ def baseline(observations, row, reset, now, lookback_h=48):
     return best
 
 
+WEBSHARE_MIN_DAYS = 1.0
+
+
+def webshare_pace(rows, now):
+    """Proxy bandwidth burn in calendar time (the proxy is used by jobs, not by the operator's
+    hours): GB used over the days elapsed in the billing month, projected to its end. No rate
+    under a day of data."""
+    out = []
+    for r in rows or []:
+        if (r.get("provider") != "webshare" or r.get("status") != "ok" or r.get("unit") != "GB"
+                or not r.get("resets_at") or not r.get("period_start") or not r.get("limit")):
+            continue
+        try:
+            start = dt.datetime.fromisoformat(r["period_start"])
+            end = dt.datetime.fromisoformat(r["resets_at"])
+        except (TypeError, ValueError):
+            continue
+        days = (now - start).total_seconds() / 86400
+        left_days = max(0.0, (end - now).total_seconds() / 86400)
+        entry = {"metric": r["metric"], "label": r.get("label"), "used_gb": r["used"], "limit_gb": r["limit"],
+                 "remaining_gb": r["remaining"], "resets_at": end.isoformat(), "period_start": start.isoformat(),
+                 "burn_gb_per_day": None, "safe_burn_gb_per_day": None, "projected_used_gb": None,
+                 "runs_out_at": None, "usage_fetched_at": r.get("fetched_at")}
+        if left_days > 0:
+            entry["safe_burn_gb_per_day"] = round(r["remaining"] / left_days, 3)
+        if days >= WEBSHARE_MIN_DAYS:
+            burn = r["used"] / days
+            entry["burn_gb_per_day"] = round(burn, 3)
+            entry["projected_used_gb"] = round(r["used"] + burn * left_days, 2)
+            if burn > 0 and r["remaining"] / burn < left_days:
+                entry["runs_out_at"] = (now + dt.timedelta(days=r["remaining"] / burn)).isoformat()
+        for rr in rows:
+            if rr.get("provider") == "webshare" and rr.get("status") == "ok" and rr.get("unit") == "replacements" \
+                    and rr["metric"].split(":")[-1] == r["metric"].split(":")[-1]:
+                entry["replacements_used"], entry["replacements_limit"] = rr["used"], rr["limit"]
+        out.append(entry)
+    return out
+
+
 def build(rows, turns, now, hosts=None, missing_hosts=None, idle=None, tail=None, observations=None, sources=None, resets_path=None):
     """Pace calculation with known reset points and risk windows.
 
@@ -327,6 +366,7 @@ def build(rows, turns, now, hosts=None, missing_hosts=None, idle=None, tail=None
                           "used_usd": r.get("used"), "usage_fetched_at": r.get("fetched_at")}
     return {
         "computed_at": now.astimezone(dt.timezone.utc).isoformat(),
+        "webshare": webshare_pace(rows, now),
         "hours": {
             "sources": ["claude"] if sources is None else sources, "hosts": hosts or [], "missing_hosts": missing_hosts or [],
             "today": round(today_h, 2), "claude_week_so_far": None if week_so_far is None else round(week_so_far, 2),

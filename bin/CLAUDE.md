@@ -86,7 +86,7 @@ users apart without owning any auth code.
 **`compute-usage` separates observations from billing, and is the usage contract.**
 `compute-usage --refresh` fetches Claude (OAuth usage endpoint, read-only token use,
 falling back to the statusline cache), Codex (`account/rateLimits/read` over stdio,
-no model turn), OpenRouter (`/api/v1/credits` and `/api/v1/key`) and Jev, and writes
+no model turn), OpenRouter (`/api/v1/credits` and `/api/v1/key`), Jev and Webshare, and writes
 `~/.cache/genv/compute-usage-latest.json`. `compute-usage.timer` (root, every 15 min,
 unit files live in /etc/systemd/system, not in this repo) runs it, so freshness no
 longer depends on a Claude session rendering the statusline (that cache went 3 days
@@ -99,14 +99,22 @@ per-request tokens), so it reports status `unsupported`, never a number. gcomman
 `/compute` page reads this cache. `--raw` is the old live Claude/Codex snapshot.
 Codex windows/buckets vary by account. Percentages are subscription allowance, not API
 spend; OpenRouter is dollars.
+Webshare (`WEBSHARE_API_KEY`, `Authorization: Token`) gives per active plan a
+`bandwidth:<plan_id>` row in GB (limit from `subscription/plan/`, used from
+`stats/aggregate/` over the subscription's current monthly period, which the row carries
+as `period_start` and `resets_at`) and a `replacements:<plan_id>` row (the plan's
+`proxy_replacements_used/total`). `stats/aggregate` only permission-checks `plan_id`
+(a cancelled plan returns identical totals), so bandwidth is account-wide and attached
+to the ISP plan; fine while one plan is active.
 
 **`compute-pace` turns the usage cache into pace data, and decides nothing.**
 `compute-pace.timer` (root, every 15 min, unit files in /etc/systemd/system) writes
 `~/.cache/genv/compute-pace.json`: per quota (claude 5h/7d, codex weekly) remaining,
 time to reset, burn in % per work hour, safe burn (the rate that would leave about
 5% at reset over the work hours expected before it), and the projected remaining at
-reset; plus active hours (today, this Claude week, usual pace) and the OpenRouter
-balance. Usual pace is the trailing 7-day mean, widening to 14 or 28 days only when
+reset; plus active hours (today, this Claude week, usual pace), the OpenRouter
+balance and `webshare` (proxy GB burn per calendar day against safe burn, projected
+use at the billing-month end, replacements used; no rate under a day of data). Usual pace is the trailing 7-day mean, widening to 14 or 28 days only when
 fewer than 4 days in the window had activity; `usual_pace_days` names the window.
 Projections use the 28-day weekday-hour profile scaled to that pace, so they follow
 the recent level without one quiet day zeroing a weekday. The 28-day fields

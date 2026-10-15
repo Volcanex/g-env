@@ -270,6 +270,17 @@ def pace_section(home, now=None):
         o = data.get('openrouter')
         if o and o.get('remaining_usd') is not None:
             lines.append(f"openrouter: {'-' if o['remaining_usd'] < 0 else ''}${abs(o['remaining_usd']):.2f} left of ${o['limit_usd']:.0f}")
+        for w in data.get('webshare') or []:
+            line = f"webshare {w['label']}: {w['remaining_gb']:.1f} of {w['limit_gb']:g} GB left, resets {dt.datetime.fromisoformat(w['resets_at']).astimezone(london):%a %d %b}"
+            if w.get('burn_gb_per_day') is None:
+                line += '; <1 day of data'
+            else:
+                line += f"; burn {w['burn_gb_per_day']:.2f} GB/day vs safe {w['safe_burn_gb_per_day']:.2f}"
+                line += (f" -> runs out ~{dt.datetime.fromisoformat(w['runs_out_at']).astimezone(london):%a %d %b}"
+                         if w.get('runs_out_at') else f" -> ~{w['projected_used_gb']:.0f} GB used at reset")
+            if w.get('replacements_limit'):
+                line += f"; replacements {w['replacements_used']:g}/{w['replacements_limit']:g} used"
+            lines.append(line)
         if pace_age > 1800:
             lines.append(f'[pace data {_age(pace_age)} old]')
         sys.path.insert(0, str(Path(__file__).resolve().parent))

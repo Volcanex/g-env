@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Show sanitized quota/balance snapshots for Claude, Codex, OpenRouter and Jev.
+"""Show sanitized quota/balance snapshots for Claude, Codex, OpenRouter, Jev and Webshare.
 
 Default reads the cache written by `compute-usage --refresh` (run by
 compute-usage.timer every 15 min); `--json` is the machine contract.
@@ -29,7 +29,7 @@ LATEST = Path.home() / ".cache/genv/compute-usage-latest.json"
 ROW_STALE_AFTER = 1800  # two missed timer ticks
 CLAUDE_CREDS = Path.home() / ".claude/.credentials.json"
 GCORE_ENV = instance("env")
-PROVIDERS = ("claude", "codex", "openrouter", "jev")
+PROVIDERS = ("claude", "codex", "openrouter", "jev", "webshare")
 
 
 class CodexReadError(Exception):
@@ -321,8 +321,80 @@ def fetch_jev(now, timeout=10):
     return [_row("jev", "usage", None, status="unsupported", note="no usage API")]
 
 
+WEBSHARE_API = "https://proxy.webshare.io/api/v2/"
+WEBSHARE_PLAN_NAMES = {"isp": "ISP", "default": "Datacenter", "residential": "Residential"}
+GB = 1e9  # Webshare quotes bandwidth_limit in decimal GB
+
+
+def _add_month(when, months=1):
+    if months == 0:
+        return when
+    month = when.month - 1 + months
+    year, month = when.year + month // 12, month % 12 + 1
+    for day in (when.day, 30, 29, 28):
+        try:
+            return when.replace(year=year, month=month, day=day)
+        except ValueError:
+            continue
+
+
+def _webshare_period(sub, now):
+    """Current monthly bandwidth period [start, end) of the subscription: its start_date
+    stepped forward a calendar month at a time until it contains now."""
+    start = dt.datetime.fromisoformat(sub["start_date"].replace("Z", "+00:00"))
+    now_dt = dt.datetime.fromtimestamp(now, dt.timezone.utc)
+    try:
+        term_end = dt.datetime.fromisoformat(sub["end_date"].replace("Z", "+00:00"))
+        if sub.get("term") == "monthly" and start <= now_dt < term_end:
+            return start, term_end
+    except (KeyError, ValueError, AttributeError):
+        pass
+    first, k = start, 1
+    while _add_month(first, k) <= now_dt:
+        k += 1
+    return _add_month(first, k - 1), _add_month(first, k)
+
+
+def fetch_webshare(now, timeout=10):
+    stamp = _iso(now)
+    key = _env_key("WEBSHARE_API_KEY")
+    if not key:
+        return [_row("webshare", "bandwidth", None, status="unavailable", note="WEBSHARE_API_KEY not set")]
+    auth = {"Authorization": f"Token {key}"}
+    plans = [p for p in _get_json(WEBSHARE_API + "subscription/plan/", auth, timeout).get("results", [])
+             if p.get("status") == "active"]
+    if not plans:
+        return [_row("webshare", "bandwidth", None, status="unavailable", note="no active plan")]
+    sub = _get_json(WEBSHARE_API + "subscription/", auth, timeout)
+    plans.sort(key=lambda p: (p.get("proxy_subtype") != "isp", p["id"]))
+    rows = []
+    for index, plan in enumerate(plans):
+        name = WEBSHARE_PLAN_NAMES.get(plan.get("proxy_subtype"), "Proxy")
+        pid = plan["id"]
+        limit = _number(plan.get("bandwidth_limit"))
+        # stats/aggregate accepts plan_id only as a permission check: a cancelled plan's id
+        # returns the same totals, so the figures are account-wide. Attributed to the first
+        # (ISP) plan, and bounded to the subscription's current billing month.
+        if index == 0 and limit is not None and sub.get("plan") == pid:
+            start, end = _webshare_period(sub, now)
+            span = (f"timestamp__gte={start.strftime('%Y-%m-%dT%H:%M:%SZ')}"
+                    f"&timestamp__lte={_iso(now).replace('+00:00', 'Z')[:19]}Z&plan_id={pid}")
+            stats = _get_json(WEBSHARE_API + "stats/aggregate/?" + span, auth, timeout)
+            used = (_number(stats.get("bandwidth_total")) or 0) / GB
+            row = _row("webshare", f"bandwidth:{pid}", stamp, remaining=max(0.0, limit - used), used=used,
+                       limit=limit, unit="GB", resets_at=end.timestamp(), label=f"{name} bandwidth",
+                       note=f"{stats.get('requests_total', 0)} requests, {stats.get('requests_failed', 0)} failed")
+            row["period_start"] = _iso(start.timestamp())
+            rows.append(row)
+        total, used_r = _number(plan.get("proxy_replacements_total")), _number(plan.get("proxy_replacements_used"))
+        if total:
+            rows.append(_row("webshare", f"replacements:{pid}", stamp, remaining=max(0.0, total - (used_r or 0)),
+                             used=used_r or 0, limit=total, unit="replacements", label=f"{name} replacements"))
+    return rows or [_row("webshare", "bandwidth", None, status="unavailable", note="no usable plan fields")]
+
+
 FETCHERS = {"claude": fetch_claude, "codex": fetch_codex,
-            "openrouter": fetch_openrouter, "jev": fetch_jev}
+            "openrouter": fetch_openrouter, "jev": fetch_jev, "webshare": fetch_webshare}
 
 
 def refresh(path=LATEST, now=None, timeout=10):
@@ -391,6 +463,8 @@ def _human(rows):
             continue
         if r["unit"] == "percent":
             val = f"{r['remaining']:g}% remaining"
+        elif r["unit"] == "replacements":
+            val = f"{r['remaining']:g} remaining ({r['used']:g} used of {r['limit']:g})"
         elif r["remaining"] is not None:
             val = f"{r['remaining']:.2f} {r['unit']} remaining ({r['used']:.2f} used)"
         else:

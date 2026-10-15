@@ -80,6 +80,55 @@ class ComputeUsageTests(unittest.TestCase):
             self.assertEqual(archive.parent.stat().st_mode & 0o777, 0o700)
             self.assertNotIn("conversation", archive.read_text())
 
+    def test_webshare_rows_period_and_account_wide_stats(self):
+        plans = {"results": [
+            {"id": 1, "status": "cancelled", "proxy_subtype": "isp", "bandwidth_limit": 250.0,
+             "proxy_replacements_total": 10, "proxy_replacements_used": 0},
+            {"id": 2, "status": "active", "proxy_subtype": "isp", "bandwidth_limit": 250.0,
+             "proxy_replacements_total": 100, "proxy_replacements_used": 7}]}
+        sub = {"plan": 2, "term": "monthly", "start_date": "2026-10-15T12:55:54Z",
+               "end_date": "2026-11-14T12:55:54Z"}
+        urls = []
+
+        def fake(url, headers, timeout=10):
+            urls.append(url)
+            self.assertEqual(headers["Authorization"], "Token k")
+            if "subscription/plan/" in url:
+                return plans
+            if "stats/aggregate" in url:
+                return {"bandwidth_total": 5e9, "requests_total": 10, "requests_failed": 1}
+            return sub
+
+        now = 1792400000  # 2026-10-19
+        old = compute._get_json, compute._env_key
+        compute._get_json, compute._env_key = fake, lambda name: "k"
+        try:
+            rows = compute.fetch_webshare(now)
+        finally:
+            compute._get_json, compute._env_key = old
+        bw, rep = rows
+        self.assertEqual((bw["metric"], bw["used"], bw["remaining"], bw["limit"], bw["unit"]),
+                         ("bandwidth:2", 5.0, 245.0, 250.0, "GB"))
+        self.assertEqual(bw["resets_at"], "2026-11-14T12:55:54+00:00")
+        self.assertEqual(bw["period_start"], "2026-10-15T12:55:54+00:00")
+        self.assertEqual((rep["metric"], rep["used"], rep["remaining"], rep["limit"]),
+                         ("replacements:2", 7, 93, 100))
+        stats = [u for u in urls if "stats/aggregate" in u][0]
+        self.assertIn("timestamp__gte=2026-10-15T12:55:54Z", stats)
+        self.assertIn("plan_id=2", stats)
+
+    def test_webshare_missing_key_and_period_rollover(self):
+        old = compute._env_key
+        compute._env_key = lambda name: None
+        try:
+            self.assertEqual(compute.fetch_webshare(0)[0]["status"], "unavailable")
+        finally:
+            compute._env_key = old
+        sub = {"start_date": "2026-01-31T00:00:00Z", "term": "annual", "end_date": "2027-01-31T00:00:00Z"}
+        for day, want in (("2026-02-25", ("2026-01-31", "2026-02-28")), ("2026-03-05", ("2026-02-28", "2026-03-31"))):
+            start, end = compute._webshare_period(sub, time.mktime(time.strptime(day, "%Y-%m-%d")) - time.timezone)
+            self.assertEqual((start.date().isoformat(), end.date().isoformat()), want)
+
 
 if __name__ == "__main__":
     unittest.main()

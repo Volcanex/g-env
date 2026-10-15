@@ -152,6 +152,22 @@ class BuildTests(unittest.TestCase):
         self.assertEqual([q["id"] for q in data["quotas"]], ["codex 7d"])
         self.assertEqual(data["openrouter"]["remaining_usd"], 3.0)
 
+    def test_webshare_burn_projection_and_run_out(self):
+        def ws(used, days):
+            return [{"provider": "webshare", "metric": "bandwidth:1", "label": "ISP bandwidth", "status": "ok",
+                     "unit": "GB", "used": used, "remaining": 250 - used, "limit": 250.0,
+                     "period_start": (NOW - dt.timedelta(days=days)).isoformat(),
+                     "resets_at": (NOW + dt.timedelta(days=30 - days)).isoformat(), "fetched_at": NOW.isoformat()},
+                    {"provider": "webshare", "metric": "replacements:1", "status": "ok", "unit": "replacements",
+                     "used": 4, "remaining": 96, "limit": 100.0}]
+        young = pace.build(ws(1, 0.5), [], NOW)["webshare"][0]
+        self.assertIsNone(young["burn_gb_per_day"])
+        self.assertEqual(young["replacements_used"], 4)
+        fits = pace.build(ws(10, 10), [], NOW)["webshare"][0]
+        self.assertEqual((fits["burn_gb_per_day"], fits["projected_used_gb"], fits["runs_out_at"]), (1.0, 30.0, None))
+        hot = pace.build(ws(100, 10), [], NOW)["webshare"][0]
+        self.assertIsNotNone(hot["runs_out_at"])
+
     def test_load_observations_reads_archive_rows_and_skips_old_format(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "a.jsonl"
