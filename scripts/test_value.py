@@ -274,7 +274,7 @@ class ValueTests(unittest.TestCase):
         self.assertEqual(self.pace.read_text(), before)
 
     def test_explain_agrees_with_rank_and_says_why_points_sit_out(self):
-        self.write(quota('claude'), quota('codex'))
+        self.write(quota('claude'), quota('codex', remaining=25))
         self.override('claude', temp='COLD')
         for row in [(r, None) for r in value._config()['value']] + [('build', 'ui')]:
             for stakes in value.STAKES:

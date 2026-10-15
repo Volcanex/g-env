@@ -28,6 +28,19 @@ class TemperatureTests(unittest.TestCase):
         self.assertEqual(temperature.provider('claude', now=NOW, path=path, mode_path=path.parent / 'none.json')[0], 'FREEZING')
         self.assertEqual(temperature.provider('codex', now=NOW, path=path, mode_path=path.parent / 'none.json')[0], 'BURN')
 
+    def test_short_heavy_sample_after_reset_is_not_freezing(self):
+        q = dict(quota('codex 7d', 'codex', 4.4, 1.7, used=35.0, reset_days=6.5), remaining_pct=65.0, sampled_work_hours=8)
+        word, r, _ = temperature.measured('codex', now=NOW, path=self.write([q]))
+        self.assertEqual(word, 'HOT')
+        self.assertAlmostEqual(r, 2.5 * 65 / temperature.eburn_above('codex', 156), places=6)
+        q['remaining_pct'], q['used_pct'] = 20.0, 80.0
+        self.assertEqual(temperature.measured('codex', now=NOW, path=self.write([q]))[0], 'COLD')
+
+    def test_prior_fades_as_the_sample_grows(self):
+        q = quota('claude 7d', 'claude', 4.0, 1.0)
+        self.assertEqual(temperature.burn_rate(dict(q, sampled_work_hours=0)), 1.0)
+        self.assertAlmostEqual(temperature.burn_rate(dict(q, sampled_work_hours=36)), 3.25)
+
     def test_codex_effort_follows_codex_temperature(self):
         hot = self.write([quota('codex 7d', 'codex', 0.3, 0.9)])
         cold = self.write([quota('codex 7d', 'codex', 2.0, 0.8)])

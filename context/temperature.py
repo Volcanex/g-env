@@ -22,6 +22,12 @@ reported reset) within EBURN_HOURS with more than EBURN_LEFT percent left, so wh
 is left is about to be wasted, or holds more than its EBURN_ABOVE step for the time
 left (Codex: a curve from 75% a week out through 50% at half a week to 25% a day out). Spend it on
 anything useful, as wide as possible. `g-temp codex eburn` forces it.
+
+Measured burn is pulled toward the safe pace by PRIOR_WORK_HOURS of on-pace work, so a
+few heavy hours just after a reset cannot swing a provider to FREEZING on their own.
+A provider with an EBURN curve is never colder than its place under that curve: right
+under the line reads BURN (the next step down from EBURN), half way down WARM, so the
+scale runs continuously instead of flipping from EBURN to FREEZING at a reset.
 """
 import datetime as dt
 import json
@@ -40,6 +46,7 @@ EBURN_ABOVE = {'codex': (75.0, 0.57)}
 SPEEDS = ('FAST', 'NORMAL', 'SLOW')
 PROVIDERS = ('claude', 'codex')
 CLAUDE_BURN_WALL = 5.0
+PRIOR_WORK_HOURS = 12.0
 LONDON = ZoneInfo('Europe/London')
 
 
@@ -114,12 +121,35 @@ def word(h):
             return w
 
 
-def ratio(q, now):
+def burn_rate(q):
+    """Work-hour burn shrunk toward the safe pace by PRIOR_WORK_HOURS, or None without a usable sample."""
     burn, safe = q.get('burn_pct_per_work_hour'), q.get('safe_burn_pct_per_work_hour')
-    if burn and safe is not None and not q.get('low_sample'):
-        return safe / burn
+    if burn is None or safe is None or q.get('low_sample'):
+        return None
+    n = q.get('sampled_work_hours')
+    if n is None or burn == 0:
+        return burn
+    return (n * burn + PRIOR_WORK_HOURS * safe) / (n + PRIOR_WORK_HOURS)
+
+
+def curve_ratio(q, now):
+    """Ratio from the weekly window's place under its EBURN curve: BURN's threshold at the line."""
+    if q.get('provider') not in EBURN_ABOVE or q.get('window_hours', 0) < 168 or q.get('remaining_pct') is None:
+        return None
     left = (dt.datetime.fromisoformat(q.get('effective_resets_at') or q['resets_at']) - now).total_seconds()
-    return headroom(q.get('used_pct'), left, q['window_hours'] * 3600)
+    allowed = eburn_above(q['provider'], left / 3600)
+    return TEMPERATURES[0][0] * q['remaining_pct'] / allowed if allowed > 0 else None
+
+
+def ratio(q, now):
+    burn, safe = burn_rate(q), q.get('safe_burn_pct_per_work_hour')
+    if burn:
+        r = safe / burn
+    else:
+        left = (dt.datetime.fromisoformat(q.get('effective_resets_at') or q['resets_at']) - now).total_seconds()
+        r = headroom(q.get('used_pct'), left, q['window_hours'] * 3600)
+    floor = curve_ratio(q, now)
+    return r if floor is None else max(r or 0, floor)
 
 
 def wall(quotas, name, now):

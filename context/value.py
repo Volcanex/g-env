@@ -85,12 +85,15 @@ def prices(home=None, now=None, pace_path=None, mode_path=None, overrides=None):
         rows = []
         for row in provider_rows:
             remaining = row.get('remaining_pct')
-            burn, safe = row.get('burn_pct_per_work_hour'), row.get('safe_burn_pct_per_work_hour')
+            burn, safe = temperature.burn_rate(row), row.get('safe_burn_pct_per_work_hour')
+            floor = temperature.curve_ratio(row, now)
             if remaining is not None and remaining <= reserve:
                 r = 10.0
-            elif remaining is not None and burn is not None and safe is not None and not row.get('low_sample'):
+            elif remaining is not None and burn is not None:
                 affordable = safe * (remaining - reserve) / max(remaining - 5, 1e-9)
                 r = burn / affordable if affordable > 0 else 10.0 if burn > 0 else 0.0
+                if floor:
+                    r = min(r, 1 / floor)
             elif ratio is not None:
                 r = 1 / max(ratio, 1e-9)
             else:
