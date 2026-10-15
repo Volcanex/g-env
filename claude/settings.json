@@ -62,6 +62,16 @@
     ],
     "PreToolUse": [
       {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/ganti-gate.py\"",
+            "timeout": 1
+          }
+        ]
+      },
+      {
         "matcher": "Agent|Task",
         "hooks": [
           {

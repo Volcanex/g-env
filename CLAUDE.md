@@ -27,6 +27,9 @@ call before adding their platform-specific configs.
   and the real skill library. Preserve unmanaged skills and independent config.
 - `claude/`: client settings, agent definitions and thin root and hook adapters.
   Historical instruction and skill paths alias neutral sources.
+  `claude/hooks/ganti-gate.py` imports the sibling g-anti-ai copy gate in process
+  on Write, Edit and MultiEdit. Missing g-anti-ai or any error permits the tool.
+  g-anti-ai owns copy paths, prose extraction, calibration and bypasses.
 - `bin/g-scout` and `claude/hooks/luna-scout.py` give substantial Claude subagents
   checked research pointers from the gather runner. `G_SCOUT=0` disables the boost.
   `G_SCOUT_DEBUG=1` records hook decisions under `~/.cache/genv/scout/<agent_id>/`.
