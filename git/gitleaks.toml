@@ -1,0 +1,58 @@
+# Custom rules for the shared pre-commit guard (git/hooks/pre-commit).
+# useDefault keeps every built-in gitleaks rule; these add the custom field
+# names no built-in rule knows, after adze leaked admin/intake/handover tokens.
+title = "g-env secret guard"
+
+[extend]
+useDefault = true
+
+# The three named keys fire on any non-placeholder value of 6+ chars, with no
+# entropy floor: real admin_token values have been weak passwords.
+[[rules]]
+id = "g-named-token-quoted"
+description = "admin/intake/handover token with a quoted value (JSON, YAML, Python, JS)"
+regex = '''(?i)\b(?:admin|intake|handover)_token["']?\s*[:=]\s*["']([^"'\s]{6,})["']'''
+secretGroup = 1
+keywords = ["admin_token", "intake_token", "handover_token"]
+
+[[rules]]
+id = "g-named-token-bare"
+description = "admin/intake/handover token with a bare value on its own line (.env, YAML)"
+regex = '''(?im)^[ \t]*(?:export[ \t]+)?["']?(?:admin|intake|handover)_token["']?[ \t]*[:=][ \t]*([^\s"'#,;()\[\]{}]{6,})[ \t]*(?:#.*)?$'''
+secretGroup = 1
+keywords = ["admin_token", "intake_token", "handover_token"]
+
+# Any other *_token key needs 16+ chars and Shannon entropy 3.5, so names,
+# ids and words like "slack_pinned_ts" or short flags stay quiet.
+[[rules]]
+id = "g-generic-token-quoted"
+description = "any *_token key with a quoted high-entropy value"
+regex = '''(?i)\b[a-z0-9]+(?:_[a-z0-9]+)*_token["']?\s*[:=]\s*["']([^"'\s]{16,})["']'''
+secretGroup = 1
+entropy = 3.5
+keywords = ["_token"]
+
+[[rules]]
+id = "g-generic-token-bare"
+description = "any *_token key with a bare high-entropy value on its own line"
+regex = '''(?im)^[ \t]*(?:export[ \t]+)?["']?[a-z0-9]+(?:_[a-z0-9]+)*_token["']?[ \t]*[:=][ \t]*([^\s"'#,;()\[\]{}]{16,})[ \t]*(?:#.*)?$'''
+secretGroup = 1
+entropy = 3.5
+keywords = ["_token"]
+
+# Placeholders, template references and dotted code references are not secrets.
+[[allowlists]]
+targetRules = ["g-named-token-quoted", "g-named-token-bare", "g-generic-token-quoted", "g-generic-token-bare"]
+regexTarget = "secret"
+regexes = [
+  '''(?i)^change[-_]?me''',
+  '''(?i)^x{3,}''',
+  '''^<.*>$''',
+  '''^\$\{.*\}$''',
+  '''^\$[A-Za-z_][A-Za-z0-9_]*$''',
+  '''^\{\{.*\}\}$''',
+  '''(?i)^your[-_]''',
+  '''(?i)^(example|dummy|test|placeholder|redacted|none|null|true|false)$''',
+  '''(?i)^(example|dummy|test|fake|placeholder)[-_]''',
+  '''^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$''',
+]

@@ -61,6 +61,11 @@ call before adding their platform-specific configs.
   since hooksPath replaces them all. A repo opts in with `git config core.hooksPath
   <g-env>/git/hooks`; `gitleaks:allow` on a line or a `.gitleaksignore` entry
   clears a false positive.
+- `git/gitleaks.toml`: the guard's ruleset. It extends the gitleaks defaults with
+  `*_token` rules (admin, intake and handover tokens at 6+ chars, any other
+  `*_token` at 16+ chars and entropy 3.5) and allowlists placeholders. Passing it
+  with `--config` hides a repo's own `.gitleaks.toml`, so the hook runs a second
+  plain pass whenever one exists (or `GITLEAKS_CONFIG` is set).
 - `scripts/mirror-claude.py`: links tracked and untracked nonignored `CLAUDE.md` to `AGENTS.md` in
   supplied repositories. `--discover` scans sibling and home repositories (depth 3)
   and their registered worktrees. Relative symlinks reflect edits immediately, and

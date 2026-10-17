@@ -8,17 +8,42 @@
 # fingerprint to the repo's .gitleaksignore.
 cd "$(git rev-parse --show-toplevel)" || exit 1
 
+# git/gitleaks.toml extends the default ruleset with the custom *_token rules.
+# Passing it with --config makes gitleaks skip a repo's own .gitleaks.toml and
+# GITLEAKS_CONFIG, so when either exists a second pass runs with gitleaks'
+# own lookup and both must be clean.
+rules="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../gitleaks.toml"
+scan() {
+  gitleaks git --pre-commit --staged --redact --verbose --no-banner --log-level warn "$@" .
+}
 if command -v gitleaks >/dev/null 2>&1; then
-  if ! gitleaks git --pre-commit --staged --redact --verbose --no-banner --log-level warn .; then
+  rc=0
+  if [[ -f $rules ]]; then
+    scan --config "$rules" || rc=1
+    if [[ -f .gitleaks.toml || -n ${GITLEAKS_CONFIG:-} || -n ${GITLEAKS_CONFIG_TOML:-} ]]; then
+      scan || rc=1
+    fi
+  else
+    scan || rc=1
+  fi
+  if (( rc )); then
     echo "pre-commit: gitleaks flagged the staged changes above; commit blocked" >&2
     exit 1
   fi
 else
   # No gitleaks on this machine: catch the unambiguous key formats only.
   pattern='AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{60,}|sk-ant-[A-Za-z0-9_-]{20,}|sk-(proj-)?[A-Za-z0-9_-]{40,}|xox[abprs]-[A-Za-z0-9-]{10,}|[rs]k_live_[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{35}|-----BEGIN [A-Z ]*PRIVATE KEY-----'
-  hits=$(git diff --cached -U0 --no-color --diff-filter=ACMR |
-    awk '/^\+\+\+ b\//{f=substr($0,7)} /^\+[^+]/{print f": "$0}' |
-    grep -E -- "$pattern" | grep -v 'gitleaks:allow' | cut -d: -f1 | sort -u)
+  # The custom token keys: the named three at 6+ chars, any other *_token at 24+
+  # (no entropy check here, so a higher floor than the gitleaks rule), minus
+  # placeholders, dotted code references such as settings.admin_token and a
+  # bare variable inside a literal such as {"admin_token": admin_token}.
+  tokens='(admin|intake|handover)_token["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"']?[^"'"'"'[:space:],;(){}]{6,}|_token["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"']?[A-Za-z0-9_+/=.-]{24,}'
+  placeholder='_token["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"']?(change-?me|x{3,}|<|[$][{]|[$][A-Za-z_]|[{][{]|your[-_]|(example|dummy|test|fake|placeholder)([-_"'"'"']|$)|[A-Za-z_][A-Za-z0-9_]*([.][A-Za-z_][A-Za-z0-9_]*)+([^A-Za-z0-9_]|$)|[A-Za-z_][A-Za-z0-9_]*[[:space:]]*[,})])'
+  added=$(git diff --cached -U0 --no-color --diff-filter=ACMR |
+    awk '/^\+\+\+ b\//{f=substr($0,7)} /^\+[^+]/{print f": "$0}')
+  hits=$( { grep -E -- "$pattern" <<<"$added"
+      grep -Ei -- "$tokens" <<<"$added" | grep -Eiv -- "$placeholder"; } |
+    grep -v 'gitleaks:allow' | cut -d: -f1 | sort -u)
   if [[ -n $hits ]]; then
     echo "pre-commit: staged changes look like they carry a secret, in:" >&2
     echo "$hits" | sed 's/^/  /' >&2
