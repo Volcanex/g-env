@@ -556,7 +556,7 @@ failing tool call, at most six per subagent and at least two minutes apart. Only
 score 5 may arrive in the first minute; later score 4-5, or 3 while struggling.
 Pointers are one line and at most 200 characters. Stop touches D/stop; old scout
 directories are pruned after two days. `~/.cache/genv/boost.jsonl` counts injections.
-`G_SCOUT=0` disables the boost; `G_SCOUT_DEBUG=1` logs every hook decision to
+`G_SCOUT=0` disables the boost for one session and `~/.cache/genv/scout/OFF` for every session; `G_SCOUT_DEBUG=1` logs every hook decision to
 D/hook.log. `G_SCOUT_RUNNER` and `G_SCOUT_INTERVAL` are test overrides.
 
 **`refresh-models` keeps `context/models.json` current** (`refresh-models.timer`,

@@ -227,7 +227,8 @@ def main():
             return
         directory = Path.home() / '.cache/genv/scout' / agent_id
         kind = event.get('hook_event_name')
-        if os.environ.get('G_SCOUT') == '0' and kind != 'SubagentStop':
+        # OFF switches every session at once, which an env var set at launch cannot do.
+        if (os.environ.get('G_SCOUT') == '0' or (directory.parent / 'OFF').exists()) and kind != 'SubagentStop':
             return debug(directory, event, 'disabled')
         if kind == 'SubagentStart':
             start(directory, event)

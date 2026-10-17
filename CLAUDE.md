@@ -31,7 +31,7 @@ call before adding their platform-specific configs.
   on Write, Edit and MultiEdit. Missing g-anti-ai or any error permits the tool.
   g-anti-ai owns copy paths, prose extraction, calibration and bypasses.
 - `bin/g-scout` and `claude/hooks/luna-scout.py` give substantial Claude subagents
-  checked research pointers from the gather runner. `G_SCOUT=0` disables the boost.
+  checked research pointers from the gather runner. `G_SCOUT=0` or `~/.cache/genv/scout/OFF` disables the boost.
   `G_SCOUT_DEBUG=1` records hook decisions under `~/.cache/genv/scout/<agent_id>/`.
 - `bin/g-agent-run` falls back when a provider returns a non-answer. Short fragments,
   blocked sandbox or permission reports, and refusals without a deliverable fail.
