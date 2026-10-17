@@ -2,7 +2,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Agent, Grades, Job } from '../types'
 
-import { age, ctxColor, kilo, marks, order, pad, point } from './deck'
+import { age, claimOnce, ctxColor, kilo, marks, order, pad, point } from './deck'
 
 const PANE = 'g-deck'
 const AGENTS = { plugin: 'g-deck', key: 'agents' } as const
@@ -19,6 +19,11 @@ type $ = EngineInterface
 
 // Docked beside a fullscreen transcript the deck takes a quarter of the terminal.
 let dockedFor = 0
+
+// Agents whose Luna digest went out. Claimed synchronously before the append, so neither an
+// overlapping tick nor a patch() that writes back a stale row without `ended` can send it twice.
+const digested = new Set<string>()
+let ticking = false
 const quarter = (columns: number) => Math.max(40, Math.floor(columns / 4))
 
 async function agents($: $) {
@@ -69,7 +74,7 @@ async function readJobs($: $, home: string, now: number): Promise<Job[]> {
   return jobs.sort((a, b) => a.started - b.started)
 }
 
-async function tick($: $, home: string) {
+export async function tick($: $, home: string) {
   const now = await $.clock.now()
   const all = await agents($)
   const live = new Map((await $.agent.list()).map(info => [info.id, info.status]))
@@ -92,7 +97,7 @@ async function tick($: $, home: string) {
       scout = { running: !(await $.fs.exists(`${dir}/stop`)), found }
     } catch {}
     // The orchestrator hears what Luna fed a worker once that worker is done, so it can weigh the result.
-    if (isOver && agent.ended === undefined && delivered.length) {
+    if (isOver && agent.ended === undefined && delivered.length && claimOnce(digested, agent.id)) {
       const text = `Luna boost digest: ${agent.type} (${agent.description}) ended ${status} after ${delivered.length} pointer(s): ${delivered.join(' ')}`
       void $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } }).catch(() => {})
     }
@@ -110,7 +115,12 @@ export const register: Register = on => {
     const genv = (await $.env.get('GENV')) ?? (await framework($, home))
     await $.command.register({ name: 'deck', description: 'Show running agents and their grades' })
     void refreshGrades($, genv)
-    $.clock.every(3000, () => void tick($, home))
+    // One tick at a time: a slow tick must not overlap the next one reading the same stale rows.
+    $.clock.every(3000, () => {
+      if (ticking) return
+      ticking = true
+      void tick($, home).finally(() => { ticking = false })
+    })
     $.clock.every(300_000, () => void refreshGrades($, genv))
     void $.ui.open({ id: PANE, title: 'Agents' })
     return next(e)

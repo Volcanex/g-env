@@ -58,3 +58,10 @@ export function ctxColor(tokens: number) {
 export function kilo(tokens?: number) {
   return tokens === undefined ? '' : `${Math.round(tokens / 1000)}k`
 }
+
+// Claims `id` in `seen` once: true the first time, false after. Synchronous, so it is atomic in the hook's loop.
+export function claimOnce(seen: Set<string>, id: string) {
+  if (seen.has(id)) return false
+  seen.add(id)
+  return true
+}
