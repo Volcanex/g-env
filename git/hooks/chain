@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Pass-through for every client hook other than pre-commit. core.hooksPath
+# replaces .git/hooks for all hook names, so without these a repo's own
+# commit-msg, pre-push, post-checkout and the rest (git lfs installs several)
+# would stop running silently. Each name below is a symlink to this file.
+own="$(git rev-parse --git-common-dir)/hooks/${0##*/}"
+if [[ -x $own ]]; then
+  exec "$own" "$@"
+fi
+exit 0
