@@ -93,6 +93,12 @@ concise brief rather than the full conversation where supported. Read critical
 original evidence before acting on a summary. Another wave needs a concrete gap.
 Never duplicate a worker's investigation or run competing full test suites.
 
+Why shared.md staffs the way it does: finding on-topic material is context-heavy
+but quality-tolerant, so Luna runs it hard. Integrating, deciding and talking with the
+operator is context-light and quality-essential. If a task needs all-Opus, use it.
+Repeated corrections or frustration mean the models are not smart enough for the job.
+Every Codex role has web search.
+
 ## Context and compute
 
 Establish the visible success condition and baseline before substantial changes.
@@ -153,6 +159,12 @@ evidence. For performance claims record revision, configuration, workload, timin
 and failures. Visual acceptance needs the same build, data, state, viewport and
 interaction path as the human sandbox; disclose differences. The parent owns
 integration, diff review and the final user-path check.
+
+Agent shells shadow `find` and `grep` with Claude Code's embedded bfs and ugrep,
+which reject some GNU flags. bfs fails on a relative `-newermt`, and inside a `$(...)`
+guard with stderr dropped that error once read as "nothing recent" and a /tmp cleanup
+deleted live task output (2026-10-17). Delete scripts call `/usr/bin/find`, check exit
+codes and keep stderr.
 
 ## Brain and Pulse
 
