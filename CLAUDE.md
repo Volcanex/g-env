@@ -54,6 +54,11 @@ call before adding their platform-specific configs.
   generic framework defaults. Hooks and the statusLine, but no MCP servers, tokens,
   plugin dirs or standing command approvals, no git identity or credential helper,
   and configure.py's Codex defaults. Real ones live in the instance's `env/`.
+- `git/hooks/pre-commit`: the shared secret guard. gitleaks over the staged diff,
+  or a grep for unambiguous key formats where gitleaks is missing, then the repo's
+  own `.git/hooks/pre-commit`. A repo opts in with `git config core.hooksPath
+  <g-env>/git/hooks`; `gitleaks:allow` on a line or a `.gitleaksignore` entry
+  clears a false positive.
 - `scripts/mirror-claude.py`: links tracked and untracked nonignored `CLAUDE.md` to `AGENTS.md` in
   supplied repositories. `--discover` scans sibling and home repositories (depth 3)
   and their registered worktrees. Relative symlinks reflect edits immediately, and
