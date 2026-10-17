@@ -23,6 +23,9 @@ external search. g-design is mandatory for g UI, systematic-debugging precedes b
 fixes, webapp-testing checks browser paths; a missing skill is a wiring problem to
 report. Claim success only on fresh evidence along the user's actual path (build,
 data, state); review worker diffs yourself.
+Agent shells shadow `find` and `grep` with Claude Code's embedded bfs and ugrep,
+which reject some GNU flags (bfs: relative `-newermt`); a delete script calls
+`/usr/bin/find`, checks exit codes and keeps stderr.
 
 ## Writing
 
