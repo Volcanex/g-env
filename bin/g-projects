@@ -81,6 +81,19 @@ def github_url(url):
     return f'https://github.com/{owner}/{repo}'.lower()
 
 
+def resolve_github(url):
+    """Resolve a normalized URL; replace this hook in offline tests."""
+    try:
+        result = subprocess.run(['gh', 'api', 'repos/' + url[len('https://github.com/'):],
+                                 '--jq', '.html_url'],
+                                capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            return github_url(result.stdout) or url
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return url
+
+
 def scan(host, root):
     if host == 'h':
         output = command([sys.executable, '-', str(root)], input=SCAN)
@@ -158,7 +171,14 @@ def sync(args):
     entries = data.get('projects', []) + data.get('system', [])
     ids = {row['id'] for row in entries}
     urls = {github_url(row.get('url')) for row in entries} - {''}
+    resolved = {}
+    canonical_urls = None
     checks = {}
+
+    def canonical(url):
+        if url not in resolved:
+            resolved[url] = github_url(resolve_github(url)) or url
+        return resolved[url]
 
     def managed(name):
         if name not in checks:
@@ -182,12 +202,20 @@ def sync(args):
     for host, inventory in inventories.items():
         for repo in inventory['repos']:
             name = repo['id']
-            if (host == 'h' and repo['commits'] and not repo['remotes']
-                    and not re.search(r'-wt-|-wt$|\.bak|backup', name, re.I)):
+            if re.search(r'-wt-|-wt$|\.bak|backup|\.old\b|\.retired', name, re.I):
+                continue
+            if host == 'h' and repo['commits'] and not repo['remotes']:
                 print(f'no remote h/{name}: has commits')
             url = github_url(repo['origin'])
             if name in ids or (url and url in urls):
                 continue
+            raw_url = url
+            if url:
+                url = canonical(url)
+                if canonical_urls is None:
+                    canonical_urls = {canonical(known) for known in sorted(urls)}
+                if url in canonical_urls:
+                    continue
             if not repo['gcore'] and (not url or url.split('/')[-2] != owner):
                 continue
             entry = {'id': name}
@@ -197,7 +225,8 @@ def sync(args):
             added.append(entry)
             ids.add(name)
             if url:
-                urls.add(url)
+                urls.update((raw_url, url))
+                canonical_urls.add(url)
             print(f'add {host}/{name}: {json.dumps(entry, ensure_ascii=False)}')
 
     if args.apply and added:

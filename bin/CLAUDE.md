@@ -89,6 +89,10 @@ root on manifest hosts, deduplicates projects and system repos by id or GitHub
 URL, and reports missing directories, changed compliance and local commits with
 no remote. `sync --apply` only appends entries, then stages `manifest.json`,
 commits and pushes in the instance; its normal hook can stage rendered topology.
+Backup and work-copy names are excluded on every host. Unmatched GitHub origins
+and, lazily, manifest URLs resolve rename redirects through `gh api`, cached for
+the run with a five-second timeout per call; failures keep the normalized URL.
+Tests replace the module's `resolve_github` hook to avoid network requests.
 Apply refuses a manifest that does not round-trip through the existing two-space
 JSON format. `--manifest` / `G_PROJECTS_MANIFEST`, `G_PROJECTS_ROOT` and
 `--git-dir` / `G_PROJECTS_GIT_DIR` isolate scans and publication in tests.

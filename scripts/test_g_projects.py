@@ -54,6 +54,7 @@ def write_manifest(setup, projects=None, system=None):
 
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
+    monkeypatch.setattr(gp, 'resolve_github', lambda url: url)
     monkeypatch.setenv('GIT_CONFIG_GLOBAL', '/dev/null')
     monkeypatch.setenv('GIT_CONFIG_NOSYSTEM', '1')
     instance = init(tmp_path / 'instance')
@@ -148,6 +149,78 @@ def test_id_dedupe_and_missing_urls_do_not_match_each_other(setup, capsys):
     assert 'add h/new:' in output and 'add h/known:' not in output
 
 
+@pytest.mark.parametrize('section', ['projects', 'system'])
+def test_renamed_urls_dedupe_lazily_and_cache_per_run(setup, capsys, monkeypatch, section):
+    write_manifest(setup, **{section: [
+        {'id': 'known', 'url': 'https://github.com/Operator/known'},
+        {'id': 'apparel', 'url': 'https://github.com/Operator/old-apparel'},
+    ]})
+    repo(setup.root, 'known', origin='https://github.com/Operator/unresolved')
+    repo(setup.root, 'raw-match', origin='https://github.com/Operator/known')
+    calls = []
+
+    def resolve(url):
+        calls.append(url)
+        if url.endswith(('/seed', '/old-apparel')):
+            return 'https://github.com/OPERATOR/gp-apparel'
+        return url
+
+    monkeypatch.setattr(gp, 'resolve_github', resolve)
+    assert gp.main(['sync']) == 0
+    assert capsys.readouterr().out == 'dry run: 0 project(s) to add\n'
+    assert calls == []
+    repo(setup.root, 'seed-upstream', origin='git@github.com:Operator/SEED.git')
+    repo(setup.remote, 'seed-copy', origin='https://github.com/operator/seed')
+    for _ in range(2):
+        calls.clear()
+        assert gp.main(['sync']) == 0
+        assert capsys.readouterr().out == 'dry run: 0 project(s) to add\n'
+        assert sorted(calls) == ['https://github.com/operator/known',
+                                 'https://github.com/operator/old-apparel',
+                                 'https://github.com/operator/seed']
+
+
+@pytest.mark.parametrize('old_owner,new_owner', [('SomeoneElse', 'OPERATOR'), ('Operator', 'SomeoneElse')])
+def test_canonical_url_used_for_registration_and_owner_check(setup, capsys, monkeypatch, old_owner, new_owner):
+    repo(setup.root, 'checkout', origin=f'git@github.com:{old_owner}/seed.git')
+    monkeypatch.setattr(gp, 'resolve_github',
+                        lambda url: f'https://github.com/{new_owner}/current')
+    assert gp.main(['sync']) == 0
+    output = capsys.readouterr().out
+    if new_owner == 'OPERATOR':
+        entry = json.loads(output.splitlines()[0].split(': ', 1)[1])
+        assert entry == {'id': 'checkout', 'url': 'https://github.com/operator/current',
+                         'host': 'h', 'managed': False}
+    else:
+        assert output == 'dry run: 0 project(s) to add\n'
+
+
+@pytest.mark.parametrize('failure', ['exit', 'timeout', 'missing', 'invalid', 'empty'])
+def test_resolver_failure_falls_back_without_crashing(monkeypatch, failure):
+    url = 'https://github.com/operator/project'
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        assert kwargs == {'capture_output': True, 'text': True, 'timeout': 5}
+        if failure == 'timeout':
+            raise subprocess.TimeoutExpired(argv, 5)
+        if failure == 'missing':
+            raise FileNotFoundError('gh unavailable')
+        return SimpleNamespace(returncode=1 if failure == 'exit' else 0,
+                               stdout='' if failure == 'empty' else 'not a GitHub URL')
+
+    monkeypatch.setattr(gp.subprocess, 'run', run)
+    assert gp.resolve_github(url) == url
+    assert calls == [['gh', 'api', 'repos/operator/project', '--jq', '.html_url']]
+
+
+def test_resolver_normalizes_github_response(monkeypatch):
+    monkeypatch.setattr(gp.subprocess, 'run', lambda *args, **kwargs: SimpleNamespace(
+        returncode=0, stdout='https://github.com/OPERATOR/Current\n'))
+    assert gp.resolve_github('https://github.com/operator/old') == 'https://github.com/operator/current'
+
+
 @pytest.mark.parametrize('style', ['compact', 'crlf', 'escaped-unicode'])
 def test_format_guard_aborts_without_writing(setup, capsys, style):
     data = write_manifest(setup, projects=[{'id': 'café'}])
@@ -187,13 +260,30 @@ def test_drift_report_preserves_entries(setup, capsys):
 
 
 def test_no_remote_diagnostic_excludes_work_and_backup_dirs(setup, capsys):
-    for name in ['g-scraper', 'empty', 'foo-wt-feature', 'foo-wt', 'foo.bak', 'foo-backup']:
+    for name in ['g-scraper', 'empty', 'foo-wt-feature', 'foo-wt', 'foo.bak', 'foo-backup',
+                 'foo.old', 'foo.old-20261013', 'foo.retired']:
         repo(setup.root, name, origin=None, commits=name != 'empty')
     other = repo(setup.root, 'upstream-only', origin=None, commits=True)
     git(other, 'remote', 'add', 'upstream', 'https://github.com/SomeoneElse/project')
     repo(setup.remote, 'remote-no-origin', origin=None, commits=True)
     assert gp.main(['sync']) == 0
     assert capsys.readouterr().out == 'no remote h/g-scraper: has commits\ndry run: 0 project(s) to add\n'
+
+
+@pytest.mark.parametrize('host', ['h', 'b'])
+@pytest.mark.parametrize('origin', ['git@github.com:Operator/project.git', None])
+def test_backup_candidates_skipped_for_registration_and_reports(setup, capsys, monkeypatch, host, origin):
+    root = setup.root if host == 'h' else setup.remote
+    for name in ['foo-wt-feature', 'foo-wt', 'foo.bak', 'foo-backup', 'foo.old',
+                 'foo.old-20261013', 'foo.retired', 'FOO.OLD-20261013']:
+        repo(root, name, origin=origin, gcore='gcore', commits=True)
+
+    def unexpected_resolution(url):
+        pytest.fail(f'backup candidate resolved: {url}')
+
+    monkeypatch.setattr(gp, 'resolve_github', unexpected_resolution)
+    assert gp.main(['sync']) == 0
+    assert capsys.readouterr().out == 'dry run: 0 project(s) to add\n'
 
 
 def test_remote_registration_is_unmanaged_and_deduped_across_hosts(setup, capsys, monkeypatch):
@@ -228,6 +318,19 @@ def test_remote_scan_error_is_an_error(setup, capsys, monkeypatch):
     monkeypatch.setenv('PROJECT_TEST_HOSTS', json.dumps({'b': 2}))
     assert gp.main(['sync']) == 1
     assert 'scan b: test host unavailable' in capsys.readouterr().err
+
+
+def test_reset_topology_paths_absent_from_head(setup):
+    git(setup.instance, 'add', 'manifest.json')
+    git(setup.instance, 'commit', '--quiet', '-m', 'Create manifest')
+    (setup.instance / 'CLAUDE.md').write_text('Rendered topology\n')
+    (setup.instance / 'AGENTS.md').symlink_to('CLAUDE.md')
+    git(setup.instance, 'add', 'CLAUDE.md', 'AGENTS.md')
+    assert git(setup.instance, 'ls-tree', '--name-only', 'HEAD') == 'manifest.json'
+    assert git(setup.instance, 'reset', '--quiet', 'HEAD', '--', 'CLAUDE.md', 'AGENTS.md') == ''
+    assert git(setup.instance, 'diff', '--cached', '--name-only') == ''
+    assert (setup.instance / 'CLAUDE.md').read_text() == 'Rendered topology\n'
+    assert (setup.instance / 'AGENTS.md').is_symlink()
 
 
 @pytest.mark.parametrize('existing_topology', [False, True])
@@ -269,6 +372,7 @@ def test_apply_commits_only_manifest_and_hook_output_and_pushes(setup, capsys, e
                        else ['AGENTS.md', 'CLAUDE.md', 'manifest.json'])
     assert git(publication, 'diff', '--cached', '--name-only') == 'staged'
     assert git(publication, 'diff', '--name-only') == 'dirty'
+    assert git(publication, 'show', 'HEAD:CLAUDE.md') == 'Rendered topology'
     assert 'new-project' in git(publication, 'log', '-1', '--format=%s')
     assert git(bare, 'rev-parse', 'main') == git(publication, 'rev-parse', 'HEAD')
     assert json.loads(git(bare, 'show', 'main:manifest.json')) == data
