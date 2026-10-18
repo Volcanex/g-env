@@ -134,7 +134,10 @@ def brain_section(text):
         lines.append(f'{relevant.group(1)}: {shown}' + (f' (+{more} more: /api/orient)' if more > 0 else ''))
     stale = count(r'(\d+) note\(s\) stand on a dependency')
     if stale:
-        lines.append(f'Housekeeping: {stale} notes stand on a moved dependency (/api/stale).')
+        aged = re.search(r'and (\d+) flag\(s\) aged 14\+ days, oldest: ([^\n]+)', text)
+        lines.append(f'Housekeeping: {stale} notes stand on a moved dependency (/api/stale).'
+                     + (f' {aged.group(1)} aged 14+ days, oldest: {aged.group(2).strip()}. Review them now.'
+                        if aged else ''))
     backlog, outdated = count(r'(\d+) condensation candidate'), count(r'(\d+) possibly outdated')
     if outdated >= CONDENSE_OUTDATED or backlog >= CONDENSE_BACKLOG:
         lines.append(f'Housekeeping: {backlog} condensation candidates, {outdated} possibly outdated; '
