@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+"""Keep the instance's project picker in sync with its repositories.
+
+G_PROJECTS_MANIFEST, G_PROJECTS_ROOT and G_PROJECTS_GIT_DIR override the manifest,
+project root and publication checkout. Instance discovery still uses g-instance.
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+
+HERE = Path(__file__).resolve().parent
+CHECK = HERE.parent / 'skills/g-gcore-comply/scripts/check.py'
+SCAN = r'''
+import json
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+try:
+    import tomllib
+except ImportError:
+    tomllib = None
+
+
+def git(repo, *args):
+    result = subprocess.run(['git', '-C', str(repo), *args],
+                            capture_output=True, text=True, timeout=10)
+    return result.stdout.strip() if result.returncode == 0 else ''
+
+
+root = Path(sys.argv[1])
+data = {'exists': root.is_dir(), 'dirs': [], 'repos': []}
+if data['exists']:
+    for repo in sorted(root.iterdir()):
+        if not repo.is_dir():
+            continue
+        data['dirs'].append(repo.name)
+        if repo.is_symlink() or not (repo / '.git').is_dir():
+            continue
+        gcore = False
+        pyproject = repo / 'pyproject.toml'
+        if pyproject.is_file():
+            body = pyproject.read_text(encoding='utf-8')
+            if tomllib:
+                try:
+                    tool = tomllib.loads(body).get('tool', {})
+                    gcore = any(isinstance(tool.get(key), dict) for key in ('gcore', 'g-core'))
+                except tomllib.TOMLDecodeError:
+                    pass
+            else:
+                gcore = bool(re.search(r'^\s*\[tool\.(gcore|g-core)\]\s*(?:#.*)?$', body, re.M))
+        remotes = bool(git(repo, 'remote'))
+        data['repos'].append({'id': repo.name, 'origin': git(repo, 'remote', 'get-url', 'origin'),
+                              'gcore': gcore, 'remotes': remotes,
+                              'commits': not remotes and bool(git(repo, 'rev-parse', '--verify', 'HEAD'))})
+print(json.dumps(data))
+'''
+
+
+def command(argv, **kwargs):
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=120, **kwargs)
+    if result.returncode:
+        raise RuntimeError(f'{shlex.join(map(str, argv))}: {result.stderr.strip() or result.stdout.strip()}')
+    return result.stdout.strip()
+
+
+def github_url(url):
+    match = re.fullmatch(
+        r'(?:git@github\.com:|(?:https?|ssh|git)://(?:git@)?github\.com/)'
+        r'([^/\s]+)/([^/\s?#]+)', (url or '').strip().rstrip('/'), re.I)
+    if not match:
+        return ''
+    owner, repo = match.groups()
+    repo = re.sub(r'\.git$', '', repo, flags=re.I)
+    return f'https://github.com/{owner}/{repo}'.lower()
+
+
+def scan(host, root):
+    if host == 'h':
+        output = command([sys.executable, '-', str(root)], input=SCAN)
+    else:
+        argv = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', host,
+                'python3 - ' + shlex.quote(str(root))]
+        try:
+            result = subprocess.run(argv, input=SCAN, capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            print(f'skip {host}: SSH timed out')
+            return None
+        if result.returncode == 255:
+            detail = result.stderr.strip().splitlines()
+            print(f'skip {host}: {detail[-1] if detail else "SSH unavailable"}')
+            return None
+        if result.returncode:
+            raise RuntimeError(f'scan {host}: {result.stderr.strip() or "remote scanner failed"}')
+        output = result.stdout
+    data = json.loads(output)
+    if not data['exists']:
+        print(f'skip {host}: no project root {root}')
+        return None
+    return data
+
+
+def compliant(repo, manifest, instance_dir, owner):
+    env = dict(os.environ, GCORE_DIR=str(instance_dir), G_GITHUB_OWNER=owner,
+               PYTHONDONTWRITEBYTECODE='1')
+    result = subprocess.run([sys.executable, str(CHECK), str(repo), '--manifest', str(manifest)],
+                            capture_output=True, text=True, timeout=120, env=env)
+    if result.returncode not in (0, 1):
+        raise RuntimeError(f'check.py {repo}: {result.stderr.strip() or result.stdout.strip()}')
+    return result.returncode == 0
+
+
+def publish(manifest, original, data, added, git_dir):
+    relative = manifest.relative_to(git_dir)
+    if relative != Path('manifest.json'):
+        raise RuntimeError('--git-dir must contain the selected manifest.json at its root')
+    if manifest.read_bytes() != original:
+        raise RuntimeError('manifest changed during sync; rerun before applying')
+    manifest.write_bytes((json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode('utf-8'))
+    command(['git', '-C', str(git_dir), 'add', 'manifest.json'])
+    message = 'Keep new projects visible by registering ' + ', '.join(row['id'] for row in added)
+    command(['git', '-C', str(git_dir), 'commit', '--only', '-m', message, '--', 'manifest.json'])
+    # --only leaves hook-added topology paths out of the caller's index.
+    command(['git', '-C', str(git_dir), 'reset', '--quiet', 'HEAD', '--', 'CLAUDE.md', 'AGENTS.md'])
+    command(['git', '-C', str(git_dir), 'push'])
+
+
+def sync(args):
+    found = command([str(HERE / 'g-instance'), 'dir'])
+    if not found:
+        raise RuntimeError('no instance found; set G_INSTANCE')
+    instance_dir = Path(found).resolve()
+    manifest = args.manifest or os.environ.get('G_PROJECTS_MANIFEST')
+    manifest = Path(manifest or command([str(HERE / 'g-instance'), 'manifest'])).resolve()
+    original = manifest.read_bytes()
+    data = json.loads(original)
+    if args.apply and original != (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode('utf-8'):
+        raise RuntimeError('manifest formatting differs from JSON indent=2, ensure_ascii=False plus newline; '
+                           'refusing --apply without writing')
+    origin = command(['git', '-C', str(instance_dir), 'remote', 'get-url', 'origin'])
+    url = github_url(origin)
+    if not url:
+        raise RuntimeError('cannot determine GitHub owner from the instance origin')
+    owner = url.split('/')[-2]
+    root = Path(os.environ.get('G_PROJECTS_ROOT', '/home/gabriel'))
+    inventories = {}
+    for host in data.get('hosts', []):
+        inventory = scan(host['id'], root)
+        if inventory is not None:
+            inventories[host['id']] = inventory
+
+    entries = data.get('projects', []) + data.get('system', [])
+    ids = {row['id'] for row in entries}
+    urls = {github_url(row.get('url')) for row in entries} - {''}
+    checks = {}
+
+    def managed(name):
+        if name not in checks:
+            checks[name] = compliant(root / name, manifest, instance_dir, owner)
+        return checks[name]
+
+    for row in entries:
+        host, name = row.get('host'), row['id']
+        inventory = inventories.get(host)
+        if inventory is None:
+            continue
+        if name not in inventory['dirs']:
+            print(f'drift {host}/{name}: directory missing')
+        elif host == 'h' and isinstance(row.get('managed'), bool):
+            passes = managed(name)
+            if row['managed'] != passes:
+                print(f'drift h/{name}: managed={str(row["managed"]).lower()}, '
+                      f'check.py {"passes" if passes else "fails"}')
+
+    added = []
+    for host, inventory in inventories.items():
+        for repo in inventory['repos']:
+            name = repo['id']
+            if (host == 'h' and repo['commits'] and not repo['remotes']
+                    and not re.search(r'-wt-|-wt$|\.bak|backup', name, re.I)):
+                print(f'no remote h/{name}: has commits')
+            url = github_url(repo['origin'])
+            if name in ids or (url and url in urls):
+                continue
+            if not repo['gcore'] and (not url or url.split('/')[-2] != owner):
+                continue
+            entry = {'id': name}
+            if url:
+                entry['url'] = url
+            entry.update(host=host, managed=managed(name) if host == 'h' else False)
+            added.append(entry)
+            ids.add(name)
+            if url:
+                urls.add(url)
+            print(f'add {host}/{name}: {json.dumps(entry, ensure_ascii=False)}')
+
+    if args.apply and added:
+        data.setdefault('projects', []).extend(added)
+        git_dir = Path(args.git_dir or os.environ.get('G_PROJECTS_GIT_DIR') or manifest.parent).resolve()
+        publish(manifest, original, data, added, git_dir)
+        print(f'sync: added, committed and pushed {len(added)} project(s)')
+    else:
+        print(f'{"sync" if args.apply else "dry run"}: {len(added)} project(s) to add')
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest='command', required=True)
+    sync_parser = sub.add_parser('sync', help='report new projects and drift; dry run unless --apply')
+    sync_parser.add_argument('--apply', action='store_true', help='append, commit manifest.json and push')
+    sync_parser.add_argument('--manifest', help='override the instance manifest')
+    sync_parser.add_argument('--git-dir', help='override the checkout used to commit and push')
+    args = parser.parse_args(argv)
+    try:
+        sync(args)
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError) as exc:
+        print(f'g-projects: {exc}', file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

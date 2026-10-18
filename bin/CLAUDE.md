@@ -20,6 +20,7 @@ source). `.plist` files are **copied** into `~/Library/LaunchAgents`.
 | `ae-sidecar.swift` | connect/disconnect the iPad as a display | `genv ipad`, genv-bar |
 | `genv-bar.swift` | menu bar item | LaunchAgent |
 | `ae-veil.swift` | superseded by `ae-fade` (hard black mask vs crossfade) | nothing |
+| `g-projects` | register new instance repos and report manifest drift | daily `g-projects-sync.timer` / by hand |
 
 Not everything here is Mac-side: `gsync`, `sessions` and `gauth` run on any host
 and only need the passport. `ae-deploy` ends with the instance's `push-secrets`. `g-instance` prints the instance
@@ -82,6 +83,15 @@ a host. Access forwards the signed-in address to the origin as
 users apart without owning any auth code.
 
 ## The non-obvious parts
+
+**`g-projects sync` is a dry run.** It discovers repositories under the project
+root on manifest hosts, deduplicates projects and system repos by id or GitHub
+URL, and reports missing directories, changed compliance and local commits with
+no remote. `sync --apply` only appends entries, then stages `manifest.json`,
+commits and pushes in the instance; its normal hook can stage rendered topology.
+Apply refuses a manifest that does not round-trip through the existing two-space
+JSON format. `--manifest` / `G_PROJECTS_MANIFEST`, `G_PROJECTS_ROOT` and
+`--git-dir` / `G_PROJECTS_GIT_DIR` isolate scans and publication in tests.
 
 **`compute-usage` separates observations from billing, and is the usage contract.**
 `compute-usage --refresh` fetches Claude (OAuth usage endpoint, read-only token use,
