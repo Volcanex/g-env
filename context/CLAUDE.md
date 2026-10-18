@@ -7,7 +7,7 @@ Keep permanent context code here, separate from disposable `agents/` briefs.
 
 Nothing is truncated: sections render whole, sources choose their session
 excerpt with SESSION markers, and reference detail sits behind pointers. Keep the
-total under `TARGET_CHARS` by trimming sources, not by cutting output; the tests
+total under `TARGET_CHARS` and each source under `SOURCE_CHARS` by trimming sources, not by cutting output; the tests
 enforce it. Pulse shows priority entries only; Brain one orientation line plus
 actionable housekeeping. A failing section degrades to one line. Read source paths
 live, without Claude.

@@ -3,7 +3,7 @@
 
 Every section renders whole and is short by design; nothing is cut to fit a
 budget. Reference material lives behind pointers in the sources themselves.
-TARGET_CHARS is a soft guard enforced by the tests, not at runtime.
+TARGET_CHARS and SOURCE_CHARS are guards enforced by the tests, not at runtime.
 """
 import argparse
 import concurrent.futures
@@ -19,7 +19,11 @@ import urllib.request
 import time
 from zoneinfo import ZoneInfo
 
-TARGET_CHARS = 7200
+# Hard cap: Claude Code saves SessionStart hook output past 10,000 chars to a file and
+# injects only a preview (Codex's additionalContextLimit is 12000). The whole render stays under it.
+TARGET_CHARS = 10000
+# Each source has its own budget, so growth in one repo cannot force cuts to another's policy.
+SOURCE_CHARS = {'shared': 3600, 'conventions': 1700, 'topology': 700}
 MAX_SOURCE_CHARS = 100000
 MODELS_FILE = Path(__file__).resolve().parent / 'models.json'
 MODELS_STALE_DAYS = 45

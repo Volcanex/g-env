@@ -81,7 +81,7 @@ class ContextTests(unittest.TestCase):
         self.assertNotIn('truncated', output.lower())
 
     def test_rendered_context_stays_under_target(self):
-        """Soft guard on the real sources: trim them when this fails."""
+        """Per-source budgets, the hook cap and the rule ledger on the real sources."""
         gcore = instance.instance(repo=REPO)
         if not gcore or not (gcore / 'conventions.md').exists():
             self.skipTest('no instance beside g-env; set G_INSTANCE')
@@ -101,12 +101,19 @@ class ContextTests(unittest.TestCase):
         with patch.object(context, 'fetch', side_effect=lambda path: pulse if 'pulse' in path else 'Unavailable: down' if 'status' in path else orientation):
             output = context.context(self.home, '/home/gabriel/genv')
         self.assertLessEqual(len(output), context.TARGET_CHARS, f'context is {len(output)} chars')
+        for name, source in sources.items():
+            size = len(context.source_section(name, source))
+            self.assertLessEqual(size, context.SOURCE_CHARS[name], f'{name} section is {size} chars')
         self.assertNotIn('Context unavailable', output)
         self.assertNotIn('truncated', output.lower())
+        ledger = (REPO / 'context/rules.ledger').read_text().splitlines()
+        rules = [line for line in ledger if line.strip() and not line.startswith('#')]
+        self.assertGreater(len(rules), 10)
+        shared = ' '.join(context.source_section('shared', sources['shared']).split())
+        for rule in rules:
+            self.assertIn(' '.join(rule.split()), shared, 'a rule in context/rules.ledger is missing from shared.md')
         for rule in ('PRs only when asked', 'commits and pushes before it finishes', 'Never skip hooks',
-                     'numbered threads', "supersede and edit_major need the operator's assent",
-                     'Build no cross-agent handover or automatic task resumption', 'Staff from the Compute pace data',
-                     'Trade at most ~5% quality', 'Never expose secrets', '**h**', 'URGENT'):
+                     'numbered threads', '**h**', 'URGENT'):  # gcore rules and fixture markers, shared.md is the ledger's
             self.assertIn(rule, output)
 
     def test_pulse_keeps_priority_entries_only(self):

@@ -51,9 +51,11 @@ reference detail sits behind one-line pointers that agents follow on demand:
   through `bin/g-agent-run` (`providers.json`).
 
 A section whose builder fails renders one line naming what to read instead.
-`TARGET_CHARS` (7000) is a soft guard: `scripts/test_codex_context.py` renders
+`TARGET_CHARS` (10000) is the Claude Code hook cap and `SOURCE_CHARS` gives each source its own budget. `scripts/test_codex_context.py` renders
 the real shared/gcore sources with realistic Pulse and orientation and fails if the
-total grows past it. Trim the source when it fails; do not raise the target lightly.
+total or any source grows past its budget. It also checks every phrase in
+`context/rules.ledger` against shared.md, so dropping a rule takes a visible ledger
+edit. Trim rationale into reference.md when a budget is hit, never a rule.
 
 Local/public Brain reads run concurrently, with 2/4 second request timeouts,
 32KB response ceilings and explicit unavailable messages. Project/task are

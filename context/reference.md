@@ -95,7 +95,7 @@ Never duplicate a worker's investigation or run competing full test suites.
 
 Why shared.md staffs the way it does: finding on-topic material is context-heavy
 but quality-tolerant, so Luna runs it hard. Integrating, deciding and talking with the
-operator is context-light and quality-essential. If a task needs all-Opus, use it.
+operator is context-light and quality-essential.
 Repeated corrections or frustration mean the models are not smart enough for the job.
 Every Codex role has web search.
 
