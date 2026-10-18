@@ -364,7 +364,7 @@ def test_apply_commits_only_manifest_and_hook_output_and_pushes(setup, capsys, e
     assert 'added, committed and pushed 1 project(s)' in capsys.readouterr().out
     data = json.loads(manifest.read_bytes())
     assert data['projects'][0] == existing
-    assert data['projects'][1] == {'id': 'new-project', 'url': 'https://github.com/operator/new',
+    assert data['projects'][1] == {'id': 'new-project', 'url': 'https://github.com/Operator/NEW',
                                     'host': 'h', 'managed': True}
     assert list(data['projects'][1]) == ['id', 'url', 'host', 'managed']
     changed = git(publication, 'show', '--format=', '--name-only', 'HEAD').splitlines()

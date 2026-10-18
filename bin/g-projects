@@ -70,7 +70,7 @@ def command(argv, **kwargs):
     return result.stdout.strip()
 
 
-def github_url(url):
+def github_url(url, keep_case=False):
     match = re.fullmatch(
         r'(?:git@github\.com:|(?:https?|ssh|git)://(?:git@)?github\.com/)'
         r'([^/\s]+)/([^/\s?#]+)', (url or '').strip().rstrip('/'), re.I)
@@ -78,7 +78,8 @@ def github_url(url):
         return ''
     owner, repo = match.groups()
     repo = re.sub(r'\.git$', '', repo, flags=re.I)
-    return f'https://github.com/{owner}/{repo}'.lower()
+    url = f'https://github.com/{owner}/{repo}'
+    return url if keep_case else url.lower()
 
 
 def resolve_github(url):
@@ -220,7 +221,8 @@ def sync(args):
                 continue
             entry = {'id': name}
             if url:
-                entry['url'] = url
+                # Matching is case-blind; the manifest keeps the owner's spelling.
+                entry['url'] = github_url(repo['origin'], keep_case=True) if url == raw_url else url
             entry.update(host=host, managed=managed(name) if host == 'h' else False)
             added.append(entry)
             ids.add(name)

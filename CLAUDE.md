@@ -47,7 +47,7 @@ call before adding their platform-specific configs.
 - `bin/g-eburn`: spends Codex down to the EBURN curve on queued work and read-only ticket/repo reviews (live repos only); state and reports in `~/.cache/genv/eburn/`.
 - `bin/g-projects`: discovers repositories for the instance's project picker;
   dry run by default, `sync --apply` appends, commits and pushes the manifest.
-  `systemd/` stages its h units for the parent to move into the instance.
+  Its daily h units live in the instance (`gp-core/systemd/g-projects-sync.*`).
 - `bin/compute-usage`: on-demand subscription quota snapshots. `--record`
   appends sanitized observations to the user's private cache, with no model turn.
   Claude data comes from its statusline cache and may be stale. Codex data comes
