@@ -14,6 +14,23 @@ FREE = {'opus-medium-suborchestrator', 'g-suborchestrator', 'codex:codex-rescue'
 SOL = {'g-worker': 'build', 'g-explore': 'explore', 'g-research': 'research'}
 
 
+def report_broken(gate, err):
+    """Fail loud: the hook still allows, but the break is recorded in g-levels as impossible."""
+    try:
+        import datetime
+        from pathlib import Path
+        log = Path(os.environ.get("GLEVELS_LOG", "/home/gabriel/g-levels/var/results.jsonl"))
+        log.parent.mkdir(parents=True, exist_ok=True)
+        row = {"ts": datetime.datetime.now().isoformat(timespec="seconds"), "gate": gate, "version": 1,
+               "charter": "g-system", "repo": "hooks", "path": os.path.basename(__file__),
+               "result": "impossible", "note": f"hook broke and allowed: {type(err).__name__}: {err}"[:500],
+               "by": "hook"}
+        with log.open("a") as f:
+            f.write(json.dumps(row) + "\n")
+    except Exception:
+        pass
+
+
 def deny(reason):
     print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny',
                                              'permissionDecisionReason': reason}}))
@@ -52,4 +69,7 @@ def main():
     deny(reason)
 
 
-main()
+try:
+    main()
+except Exception as e:
+    report_broken('claude-staffing', e)
