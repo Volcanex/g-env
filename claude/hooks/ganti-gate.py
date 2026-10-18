@@ -33,7 +33,7 @@ def main():
         if output:
             print(json.dumps(output))
     except (Exception, SystemExit) as e:
-        report_broken("copy-voice", e)
+        report_broken("correct.copy.voice", e)
 
 
 if __name__ == "__main__":

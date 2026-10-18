@@ -72,4 +72,4 @@ def main():
 try:
     main()
 except Exception as e:
-    report_broken('claude-staffing', e)
+    report_broken('correct.staffing.claude-quota', e)
