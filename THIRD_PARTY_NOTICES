@@ -15,6 +15,12 @@ webapp-testing skill (Apache License 2.0), from Anthropic
   (see scripts/vendor-skills.sh). The full licence text is
   skills/webapp-testing/LICENSE.txt.
 
+frontend-design skill (Apache License 2.0), from Anthropic
+  skills/frontend-design/ is vendored unchanged from
+  https://github.com/anthropics/skills at dbd4588f9e1033efb41dad4bef2f7947c8993d44
+  (see scripts/vendor-skills.sh). The full licence text is
+  skills/frontend-design/LICENSE.txt.
+
 systematic-debugging skill (MIT), Copyright (c) 2025 Jesse Vincent
   skills/systematic-debugging/ is vendored from
   https://github.com/obra/superpowers at b36e0829c6d0140e93cfef2ca599b1b07d4a7797

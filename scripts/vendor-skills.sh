@@ -12,12 +12,13 @@ trap 'rm -rf "$TMP"' EXIT
 # url | pinned-sha | space-separated skill names under the repo's skills/
 PINS=(
   "https://github.com/anthropics/skills|41bbe19d1a1a7eaab5e7bb9050a417e5c6cffc8f|webapp-testing"
+  "https://github.com/anthropics/skills|dbd4588f9e1033efb41dad4bef2f7947c8993d44|frontend-design"
   "https://github.com/obra/superpowers|b36e0829c6d0140e93cfef2ca599b1b07d4a7797|systematic-debugging"
 )
 
 for pin in "${PINS[@]}"; do
   IFS='|' read -r url sha names <<< "$pin"
-  dir="$TMP/$(basename "$url")"
+  dir="$TMP/$(basename "$url")-${sha:0:8}"
   git clone --quiet --filter=blob:none --no-checkout "$url" "$dir"
   git -C "$dir" checkout --quiet "$sha"
   for name in $names; do
