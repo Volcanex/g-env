@@ -96,6 +96,30 @@ When you need a piece of UI, in strict order:
   truncated case in particular: a title cut short keeps its opening `**`
   and never meets a closer.
 
+## Looking deliberate, not generated
+
+The guidance half of the `correct.ui.on-system` gate. "It looks vibe coded" means
+a default crept in where the system had an answer.
+
+- Every font, size, colour, radius and shadow comes from the system's tokens. A
+  bigger font is not a redesign; a raw hex or a locally restyled button is drift.
+- A project on its own system (Baseline's /design) follows that system the same
+  way: its tokens, its components, its imagery rules.
+- None of the generic AI defaults the system does not use: gradient text, purple
+  or cyan glow palettes, side-tab accent borders, hairline borders with wide
+  shadows, badges above a hero headline, icon tiles over every card heading,
+  bounce or elastic easing, decorative pulsing dots.
+- Surfaces contrast: a background the same colour as the panels on it is a fault.
+- Hierarchy: the key information at a glance, the detail on demand. A one-line
+  summary, then the rest behind a disclosure. Errors and logs collapse into a
+  list, never across the page. Nothing said twice, nothing mirrored, no wall of
+  text where a table, chart or list would do.
+
+Check with `python3 /home/gabriel/g-levels/glevels/onsystem.py --refs <page or URL>`:
+it blocks on off-system fonts, a page that loads no house system, unambiguous AI
+tells and raw failure text, lists drift as leads, and renders the house reference
+screens beside the work for an independent judge.
+
 ## Rebranding a project
 
 A reskin overrides ONLY the accent slot in a scope, exactly like the
