@@ -480,6 +480,82 @@ time.sleep(10)
                 proc.kill()
                 proc.wait()
 
+    def test_unchanged_transcript_skips_rounds_until_the_agent_moves(self):
+        transcript = self.directory / 'transcript.jsonl'
+        tool = lambda cmd: json.dumps({'message': {'content': [{'type': 'tool_use', 'name': 'Bash', 'input': {'command': cmd}}]}})
+        transcript.write_text(tool('ls') + '\n')
+        self.fake.write_text('#!' + sys.executable + """
+import pathlib, time
+root = pathlib.Path.cwd()
+calls = root / 'calls.txt'
+calls.write_text(calls.read_text() + 'x' if calls.exists() else 'x')
+if len(calls.read_text()) == 1:
+    pathlib.Path(%r).open('a').write(%r + '\\n')
+else:
+    (root / 'stop').touch()
+print('NONE')
+""" % (str(transcript), tool('pytest')))
+        self.fake.chmod(0o755)
+        env = {**os.environ, 'G_SCOUT_RUNNER': str(self.fake), 'G_SCOUT_INTERVAL': '0.01'}
+        result = subprocess.run([sys.executable, str(REPO / 'bin/g-scout'), '--dir', str(self.directory),
+                                 '--brief-file', str(self.brief), '--transcript', str(transcript)],
+                                env=env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual((self.directory / 'calls.txt').read_text(), 'xx')
+
+    def test_idle_agent_gets_no_rounds_after_the_first(self):
+        transcript = self.directory / 'transcript.jsonl'
+        transcript.write_text(json.dumps({'message': {'content': [{'type': 'tool_use', 'name': 'Read', 'input': {}}]}}) + '\n')
+        self.fake.write_text('#!' + sys.executable + "\nimport pathlib\np = pathlib.Path('calls.txt')\np.write_text((p.read_text() if p.exists() else '') + 'x')\nprint('NONE')\n")
+        self.fake.chmod(0o755)
+        env = {**os.environ, 'G_SCOUT_RUNNER': str(self.fake), 'G_SCOUT_INTERVAL': '0.01'}
+        proc = subprocess.Popen([sys.executable, str(REPO / 'bin/g-scout'), '--dir', str(self.directory),
+                                 '--brief-file', str(self.brief), '--transcript', str(transcript)], env=env)
+        time.sleep(1)
+        (self.directory / 'stop').touch()
+        proc.wait(timeout=3)
+        self.assertEqual((self.directory / 'calls.txt').read_text(), 'x')
+
+    def test_quiet_rounds_back_off(self):
+        result = self.run_fake("print('NONE')\n")
+        self.assertEqual(result.returncode, 0)
+        rounds = [row['ts'] for row in scout.records(self.directory / 'scout.log') if row.get('status') == 'start']
+        gaps = [b - a for a, b in zip(rounds, rounds[1:])]
+        self.assertEqual(len(rounds), 40)
+        self.assertGreater(min(gaps[5:]), 0.07)
+
+    def test_new_signal_cuts_a_backed_off_wait_short(self):
+        self.fake.write_text('#!' + sys.executable + """
+import json, pathlib
+p = pathlib.Path('calls.txt')
+n = len(p.read_text()) + 1 if p.exists() else 1
+p.write_text('x' * n)
+if n == 1:
+    print('NONE')
+else:
+    pathlib.Path('stop').touch()
+""")
+        self.fake.chmod(0o755)
+        env = {**os.environ, 'G_SCOUT_RUNNER': str(self.fake), 'G_SCOUT_INTERVAL': '1'}
+        proc = subprocess.Popen([sys.executable, str(REPO / 'bin/g-scout'), '--dir', str(self.directory),
+                                 '--brief-file', str(self.brief)], env=env)
+        time.sleep(1.3)
+        (self.directory / 'signals.jsonl').write_text(json.dumps({'tool': 'Bash', 'error': 'Error: x', 'ts': 1}) + '\n')
+        started = time.monotonic()
+        proc.wait(timeout=5)
+        self.assertLess(time.monotonic() - started, 1.2)
+        self.assertEqual((self.directory / 'calls.txt').read_text(), 'xx')
+
+    def test_label_uses_teammate_summary(self):
+        self.assertEqual(scout.label('<teammate-message teammate_id="team-lead" summary="Finish Wing motion">\nDo it'),
+                         'Luna boost: Finish Wing motion')
+        self.assertEqual(scout.label('<teammate-message teammate_id="x">\n  Build the  page'), 'Luna boost: Build the page')
+        self.assertEqual(scout.label('Plain brief'), 'Luna boost: Plain brief')
+
+    def test_prompt_asks_for_none_when_nothing_found(self):
+        self.run_fake("import pathlib; pathlib.Path('stop').touch()\n")
+        self.assertIn('output exactly NONE', (self.directory / 'prompt.txt').read_text())
+
     def test_round_limit_is_forty(self):
         result = self.run_fake("print('{\"url\":\"https://example.org/api\",\"score\":4}')\n")
         self.assertEqual(result.returncode, 0)

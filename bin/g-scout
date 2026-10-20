@@ -5,12 +5,15 @@
 
 The hook detaches this process. Stop with D/stop. Test overrides:
 G_SCOUT_RUNNER (binary path), G_SCOUT_INTERVAL (seconds between round starts).
+A round is skipped while the agent's recent tool calls are unchanged and nothing new
+failed, and the interval doubles after a quiet round, up to eight times the base.
 """
 import argparse
 from collections import deque
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import time
 from urllib.parse import urlsplit
@@ -32,7 +35,7 @@ Score each finding 1-5 for how much it changes the agent's next step:
 3 is a useful reference; 2 is marginal; 1 is generic.
 Output only JSON lines {"url", "what", "why", "score"}; at most 3;
 only links you opened and checked. "what" is a short pointer label, not content.
-Nothing at all is the normal answer.'''
+Nothing found is the normal answer: then output exactly NONE.'''
 
 
 def records(path):
@@ -91,6 +94,13 @@ def recent_tools(transcript):
     return list(recent)
 
 
+def label(brief):
+    # A teammate's brief opens with its message wrapper; the summary names the job.
+    match = re.match(r'\s*<teammate-message\b[^>]*?\bsummary="([^"]*)"', brief)
+    text = match.group(1) if match else re.sub(r'^\s*<teammate-message\b[^>]*>', '', brief)
+    return 'Luna boost: ' + ' '.join(text.split())[:60]
+
+
 def log(stream, **row):
     stream.write(json.dumps({'ts': time.time(), **row}) + '\n')
     stream.flush()
@@ -103,29 +113,40 @@ def run(args):
         return
     directory.mkdir(parents=True, exist_ok=True)
     brief = Path(args.brief_file).read_text()[:6000]
-    interval = max(0.01, float(os.environ.get('G_SCOUT_INTERVAL', 60)))
+    base = interval = max(0.01, float(os.environ.get('G_SCOUT_INTERVAL', 60)))
     runner = os.environ.get('G_SCOUT_RUNNER', str(HERE / 'g-agent-run'))
     deadline = time.monotonic() + 50 * 60
     last_start = None
     seen_signals = 0
+    last_tools = None
+    round_no = 0
     with (directory / 'scout.log').open('a') as stream:
-        for round_no in range(1, 41):
+        while round_no < 40:
             # Poll for stop while preserving the minimum round spacing.
             while last_start is not None and time.monotonic() < last_start + interval:
                 if stop.exists() or time.monotonic() >= deadline:
                     return
+                # A new failure cuts a backed-off wait short; the base spacing still holds.
+                if time.monotonic() >= last_start + base and sum(1 for _ in records(directory / 'signals.jsonl')) > seen_signals:
+                    break
                 time.sleep(min(0.2, max(0, last_start + interval - time.monotonic())))
             if stop.exists() or time.monotonic() >= deadline:
                 return
             signals = list(records(directory / 'signals.jsonl'))
             new_signals = signals[seen_signals:]
             seen_signals = len(signals)
+            tools = recent_tools(args.transcript)
+            if args.transcript and tools == last_tools and not new_signals:
+                last_start = time.monotonic()
+                continue
+            last_tools = tools
+            round_no += 1
             findings = list(records(directory / 'findings.jsonl'))
-            context = {'brief': brief, 'recent_tools': recent_tools(args.transcript),
+            context = {'brief': brief, 'recent_tools': tools,
                        'struggle_signals': new_signals, 'already_found': findings}
             prompt = directory / 'prompt.txt'
             prompt.write_text(INSTRUCTIONS + '\n\nPrivate job context:\n' + json.dumps(context, ensure_ascii=False))
-            argv = [runner, '--role', 'boost', '--label', 'Luna boost: ' + ' '.join(brief.split())[:60],
+            argv = [runner, '--role', 'boost', '--label', label(brief),
                     '--prompt-file', str(prompt), '--workdir', str(directory)]
             last_start = time.monotonic()
             log(stream, round=round_no, status='start', signals=len(new_signals))
@@ -155,6 +176,7 @@ def run(args):
                 for row in found:
                     dest.write(json.dumps(row) + '\n')
             log(stream, round=round_no, status='done', findings=len(found))
+            interval = base if found or new_signals else min(interval * 2, base * 8)
 
 
 def main(argv=None):
