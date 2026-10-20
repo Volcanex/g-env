@@ -158,7 +158,8 @@ class HookTest(unittest.TestCase):
         self.findings(4, 5, 3)
         result = json.loads(self.fail_tool())['hookSpecificOutput']
         self.assertEqual(result, {'hookEventName': 'PostToolUse',
-                                 'additionalContext': 'Luna boost: official API 1: https://example.org/1'})
+                                 'additionalContext': 'Luna boost, web research worth 5/5: official API 1. '
+                                                      'Why it matters: exact fix Source: https://example.org/1'})
         state = hook.read_state(self.directory)
         self.assertEqual((state['count'], state['delivered'], state['last_injection']),
                          (1, ['https://example.org/1'], self.now))
@@ -272,7 +273,7 @@ class HookTest(unittest.TestCase):
         self.findings(5)
         self.assertEqual(self.invoke('PostToolUse', tool_name='Edit', tool_response='ok'), '')
         out = self.invoke('PostToolUse', tool_name='Read', tool_response='ok')
-        self.assertIn('Luna boost: official API 0', out)
+        self.assertIn('worth 5/5: official API 0.', out)
 
     def test_no_findings_means_no_output(self):
         self.active()
@@ -284,12 +285,20 @@ class HookTest(unittest.TestCase):
         self.assertEqual(self.fail_tool(), '')
 
     def test_pointer_caps_label_and_preserves_url(self):
-        row = {'url': 'https://example.org/api', 'what': ('label\n' * 100)}
+        row = {'url': 'https://example.org/api', 'what': ('label\n' * 100), 'score': 4}
         line = hook.pointer(row)
-        self.assertEqual(len(line), 200)
+        self.assertEqual(line, 'Luna boost, web research worth 4/5: ' + ('label ' * 14)[:80] + '. Source: https://example.org/api')
+        self.assertEqual(hook.pointer({'url': 'https://example.org/' + 'x' * 300}), '')
+
+    def test_pointer_delivers_the_content_on_one_line(self):
+        row = {'url': 'https://example.org/api', 'what': 'API docs', 'score': 5, 'why': 'fixes the\nexact error',
+               'content': 'Vertices.raw takes a Float32List of\npositions and ' + 'x' * 700}
+        line = hook.pointer(row)
+        self.assertTrue(line.startswith('Luna boost, web research worth 5/5: API docs. '
+                                        'Vertices.raw takes a Float32List of positions and xxx'))
+        self.assertIn(' Why it matters: fixes the exact error Source: https://example.org/api', line)
         self.assertNotIn('\n', line)
-        self.assertTrue(line.endswith(row['url']))
-        self.assertEqual(hook.pointer({'url': 'https://example.org/' + 'x' * 200}), '')
+        self.assertLess(len(line), 1000)
 
     def test_malformed_findings_are_ignored(self):
         self.active()

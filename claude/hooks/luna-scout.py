@@ -147,11 +147,20 @@ def pointer(row):
             return ''
     except ValueError:
         return ''
-    label = ' '.join(what.split()).replace('\u2014', '-').replace('\u00b7', '-') or 'reference'
-    room = 200 - len('Luna boost: : ') - len(url)
-    if room < 1:
+    if len(url) > 300:
         return ''
-    return f'Luna boost: {label[:room]}: {url}'
+
+    def clean(text, limit):
+        return ' '.join(text.split()).replace('\u2014', '-').replace('\u00b7', '-')[:limit] if isinstance(text, str) else ''
+    # A bare link was opened 5 times in 96 (2026-10-20), so the finding itself is delivered.
+    parts = [f"Luna boost, web research worth {row.get('score')}/5: {clean(what, 80) or 'reference'}."]
+    content, why = clean(row.get('content'), 600), clean(row.get('why'), 200)
+    if content:
+        parts.append(content)
+    if why:
+        parts.append(f'Why it matters: {why}')
+    parts.append(f'Source: {url}')
+    return ' '.join(parts)
 
 
 def eligible_findings(directory, state, now, struggling):

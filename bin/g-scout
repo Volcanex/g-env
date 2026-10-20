@@ -33,8 +33,12 @@ Do not repeat known findings or summarize what the agent already knows.
 Score each finding 1-5 for how much it changes the agent's next step:
 5 solves the exact problem it is stuck on; 4 changes its approach;
 3 is a useful reference; 2 is marginal; 1 is generic.
-Output only JSON lines {"url", "what", "why", "score"}; at most 3;
-only links you opened and checked. "what" is a short pointer label, not content.
+Output only JSON lines {"url", "what", "content", "why", "score"}; at most 3;
+only links you opened and checked. "what" names the source in a few words.
+"content" is what the agent needs from it, in your own words, so it can act
+without opening the link: the exact fix, API signature, parameter, version,
+number or method, up to 500 characters. State facts, not orders to the agent.
+"why" says in one line how it changes the agent's next step.
 Nothing found is the normal answer: then output exactly NONE.'''
 
 
@@ -67,10 +71,10 @@ def parse_findings(output, known):
                 continue
             if type(score) is not int or not 1 <= score <= 5 or url in known:
                 continue
-            what, why = row.get('what', 'reference'), row.get('why', '')
-            if not isinstance(what, str) or not isinstance(why, str):
+            what, why, content = row.get('what', 'reference'), row.get('why', ''), row.get('content', '')
+            if not all(isinstance(text, str) for text in (what, why, content)):
                 continue
-            found.append({'url': url, 'what': ' '.join(what.split())[:200],
+            found.append({'url': url, 'what': ' '.join(what.split())[:200], 'content': ' '.join(content.split())[:600],
                           'why': ' '.join(why.split())[:300], 'score': score, 'ts': time.time()})
             known.add(url)
             if len(found) == 3:
