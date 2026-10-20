@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """PreToolUse gate on Agent: at COLD or FREEZING, Claude-tier subagents need the operator's OK.
 
+At any temperature, a Sonnet subagent needs an 'Operator waiting:' line: Sonnet is for work the
+operator waits on, background builds go to Sol and UI parts to opus-low-worker.
 opus-medium-suborchestrator (Opus, but its workers are Sol) and Codex agents stay free. Approval is a line in the prompt starting
 "Operator approved:" (or the older "Gabriel approved:"). Missing or stale pace data fails open.
 """
@@ -14,8 +16,7 @@ FREE = {'opus-medium-suborchestrator', 'g-suborchestrator', 'codex:codex-rescue'
 SOL = {'g-worker': 'build', 'g-explore': 'explore', 'g-research': 'research'}
 
 
-def report_broken(gate, err):
-    """Fail loud: the hook still allows, but the break is recorded in g-levels as impossible."""
+def log_result(gate, result, note):
     try:
         import datetime
         from pathlib import Path
@@ -23,12 +24,17 @@ def report_broken(gate, err):
         log.parent.mkdir(parents=True, exist_ok=True)
         row = {"ts": datetime.datetime.now().isoformat(timespec="seconds"), "gate": gate, "version": 1,
                "charter": "g-system", "repo": "hooks", "path": os.path.basename(__file__),
-               "result": "impossible", "note": f"hook broke and allowed: {type(err).__name__}: {err}"[:500],
+               "result": result, "note": note[:500],
                "by": "hook"}
         with log.open("a") as f:
             f.write(json.dumps(row) + "\n")
     except Exception:
         pass
+
+
+def report_broken(gate, err):
+    """Fail loud: the hook still allows, but the break is recorded in g-levels as impossible."""
+    log_result(gate, "impossible", f"hook broke and allowed: {type(err).__name__}: {err}")
 
 
 def deny(reason):
@@ -49,8 +55,16 @@ def main():
                     f"<<'G_BRIEF_EOF'` then the self-contained brief, then `G_BRIEF_EOF`. You are notified when it ends.")
     if kind in FREE:
         return
-    if any(l.strip().lower().startswith(('operator approved:', 'gabriel approved:')) for l in (tool.get('prompt') or '').splitlines()):
+    lines = [l.strip().lower() for l in (tool.get('prompt') or '').splitlines()]
+    if any(l.startswith(('operator approved:', 'gabriel approved:')) for l in lines):
         return
+    if (kind.startswith('sonnet-') or tool.get('model') == 'sonnet') and not any(l.startswith('operator waiting:') for l in lines):
+        log_result('correct.staffing.job-shape', 'caught', f"{kind} ({tool.get('description') or ''}) without an Operator waiting line")
+        return deny(f"{kind} is a Sonnet subagent, which is only for work the operator is waiting on, and Sonnet "
+                    f"medium is no cheaper than Opus low. Bounded non-UI work: run Sol as a background Bash call, "
+                    f"`g-agent-call --role build|explore|research --block --label '<job>' --workdir <repo>` with "
+                    f"the brief on stdin. UI parts: opus-low-worker. If the operator really is waiting on this "
+                    f"result, add a line 'Operator waiting: <what they wait on>' to the prompt and retry.")
     path = os.path.join(os.path.dirname(os.path.realpath(os.path.expanduser('~/.agents/session-context.py'))), 'temperature.py')
     spec = importlib.util.spec_from_file_location('temperature', path)
     temp = importlib.util.module_from_spec(spec)

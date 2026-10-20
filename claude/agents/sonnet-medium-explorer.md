@@ -1,6 +1,6 @@
 ---
 name: sonnet-medium-explorer
-description: Sonnet 5.5, ~10s turns. Read-only code exploration while the operator is waiting on the answer: locates code, traces behaviour, file:line references, never edits. For background or larger sweeps run Sol: g-agent-call --role explore.
+description: Sonnet 5.5, ~10s turns. Read-only code exploration while the operator is waiting on the answer (the prompt needs an 'Operator waiting:' line): locates code, traces behaviour, file:line references, never edits. For background or larger sweeps run Sol: g-agent-call --role explore.
 tools: Read, Grep, Glob, Bash
 model: sonnet
 effort: medium

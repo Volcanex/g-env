@@ -1,6 +1,6 @@
 ---
 name: opus-low-worker
-description: Opus 5.5 worker at low effort, for jobs that must stay on Claude (MCP connectors, private data) when the operator is not waiting. Sol at medium already outscores it (AA 48 vs 42) on Codex quota, so it is never the step up from Sol; that is opus-medium-worker. Gated while Claude is cold.
+description: Opus 5.5 worker at low effort, for the UI parts of a build (Sol is poor at UI) and for jobs that must stay on Claude (MCP connectors, private data) when the operator is not waiting. On non-UI work Sol at medium already outscores it (AA 48 vs 42) on Codex quota, so it is never the step up from Sol; that is opus-medium-worker. Gated while Claude is cold.
 model: opus
 effort: low
 ---

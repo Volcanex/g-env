@@ -1,6 +1,6 @@
 ---
 name: sonnet-medium-researcher
-description: Sonnet 5.5, ~10s turns. Docs, library and primary-source research while the operator is waiting on the answer; returns evidence and constraints, edits nothing. For background research run Sol: g-agent-call --role research.
+description: Sonnet 5.5, ~10s turns. Docs, library and primary-source research while the operator is waiting on the answer (the prompt needs an 'Operator waiting:' line); returns evidence and constraints, edits nothing. For background research run Sol: g-agent-call --role research.
 tools: Read, Grep, Glob, Bash, WebSearch, WebFetch
 model: sonnet
 effort: medium

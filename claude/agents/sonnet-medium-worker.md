@@ -1,6 +1,6 @@
 ---
 name: sonnet-medium-worker
-description: Sonnet 5.5 worker at medium effort, ~10s turns. Use when the operator is working in tandem and waiting, when nuance decides quality (writing, judgment-heavy synthesis, UI), or when the job needs MCP connectors. Background or subtle work goes to Sol via g-agent-call (effort rising with spare Codex); opus-medium-worker only after an agent's quality or understanding fell short, or for high-fidelity visuals.
+description: Sonnet 5.5 worker at medium effort, ~10s turns. Only while the operator is working in tandem and waiting on the result; the prompt needs an 'Operator waiting:' line. It is no cheaper than Opus low on the ladder. Background builds go to Sol via g-agent-call (effort rising with spare Codex), UI parts to opus-low-worker, Claude-only background jobs (MCP connectors, private data) to opus-low-worker; opus-medium-worker only after an agent's quality or understanding fell short, or for high-fidelity visuals.
 model: sonnet
 effort: medium
 ---
