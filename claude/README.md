@@ -14,8 +14,8 @@ See `../context/README.md` for migration, limits and troubleshooting.
 `mods/g-deck` is a Claude Code mod (a function-hook plugin). The instance loads it by
 setting `CLAUDE_CODE_PLUGIN_DIRS` in its `env/claude/settings.json` to this folder. The
 framework default leaves it out: the path differs per host, settings.json is linked whole,
-and Claude Code reads env values literally. The Agents pane (`/deck`) lists every
-running subagent and Sol job with its grade from `context/grades.py`, its context
+and Claude Code reads env values literally. The Agents band above the prompt lists
+every running subagent and Sol job with its grade from `context/grades.py`, its context
 (blue to 100k, then 50k colour bands up to the 250k auto-compact, as in `bin/claude-statusline`) and
 its Luna scout as a child row (sources found, pointers given), and posts a Luna boost digest to the main session when a boosted
 worker ends. Check it with `claude plugin validate` and `claude plugin test` on the folder.

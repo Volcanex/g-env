@@ -4,7 +4,6 @@ import type { Agent, Grades, Job } from '../types'
 
 import { age, claimOnce, ctxColor, kilo, marks, order, pad, point } from './deck'
 
-const PANE = 'g-deck'
 const AGENTS = { plugin: 'g-deck', key: 'agents' } as const
 const JOBS = { plugin: 'g-deck', key: 'jobs' } as const
 const GRADES = { plugin: 'g-deck', key: 'grades' } as const
@@ -17,14 +16,10 @@ const TEMP: Record<string, string> = {
 
 type $ = EngineInterface
 
-// Docked beside a fullscreen transcript the deck takes a quarter of the terminal.
-let dockedFor = 0
-
 // Agents whose Luna digest went out. Claimed synchronously before the append, so neither an
 // overlapping tick nor a patch() that writes back a stale row without `ended` can send it twice.
 const digested = new Set<string>()
 let ticking = false
-const quarter = (columns: number) => Math.max(40, Math.floor(columns / 4))
 
 async function agents($: $) {
   return (await $.state.get(AGENTS)).value ?? {}
@@ -113,7 +108,6 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const home = (await $.env.get('HOME')) ?? '/root'
     const genv = (await $.env.get('GENV')) ?? (await framework($, home))
-    await $.command.register({ name: 'deck', description: 'Show running agents and their grades' })
     void refreshGrades($, genv)
     // One tick at a time: a slow tick must not overlap the next one reading the same stale rows.
     $.clock.every(3000, () => {
@@ -122,14 +116,7 @@ export const register: Register = on => {
       void tick($, home).finally(() => { ticking = false })
     })
     $.clock.every(300_000, () => void refreshGrades($, genv))
-    void $.ui.open({ id: PANE, title: 'Agents' })
     return next(e)
-  })
-
-  on('command.run', { command: 'deck' }, async ($, e) => {
-    dockedFor = e.presentation.columns
-    await $.ui.open({ id: PANE, title: 'Agents', columns: quarter(dockedFor) })
-    return { text: 'Agent deck opened.' }
   })
 
   on('agent.spawn', async ($, e, next) => {
@@ -169,26 +156,16 @@ export const register: Register = on => {
     return result
   })
 
-  // A stacked, narrow window never seats an unasked pane, so the deck draws as the band above the prompt.
+  // The deck draws only as the band above the prompt; the side pane is gone.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.surface !== 'terminal') return next(e)
-    if ((await $.ui.panes()).some(pane => pane.id === PANE && pane.isPlaced)) return next(e)
     const hasAny = Object.keys(await agents($)).length > 0 || ((await $.state.get(JOBS)).value ?? []).length > 0
     if (!hasAny) return next(e)
-    return deck($, e, (e.viewport?.columns ?? 80) - 6, false)
-  })
-
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const columns = e.viewport?.columns
-    if (e.props.placement === 'dock' && columns && columns !== dockedFor) {
-      dockedFor = columns
-      void $.ui.open({ id: PANE, title: 'Agents', columns: quarter(columns) }).catch(() => {})
-    }
-    return deck($, e, e.props.bodyColumns ?? 60, true)
+    return deck($, e, (e.viewport?.columns ?? 80) - 6)
   })
 }
 
-async function deck($: $, e: Parameters<$['ui']['resolve']>[0], width: number, showEmpty: boolean) {
+async function deck($: $, e: Parameters<$['ui']['resolve']>[0], width: number) {
     const { Box, Text } = $.ui.resolve(e)
     const all = await agents($)
     const jobs = (await $.state.get(JOBS)).value ?? []
@@ -219,7 +196,6 @@ async function deck($: $, e: Parameters<$['ui']['resolve']>[0], width: number, s
 
     return (
       <Box flexDirection="column">
-        {showEmpty && ordered.length === 0 && jobs.length === 0 && <Text dimColor>No agents running.</Text>}
         {ordered.map(agent => {
           const isOver = agent.ended !== undefined
           const scout = agent.scout
