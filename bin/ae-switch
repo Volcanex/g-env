@@ -445,13 +445,13 @@ while read -r id id_ws id_layout; do
   fi
 done <<<"$WIN_MAP"
 
-# The terminal sits at the right edge of a workspace it shares with other
+# The terminal sits at the left edge of a workspace it shares with other
 # windows, so it is always in the same place. Only on main: on the twin it is
 # alone. Under the held cover, so the shuffle is never seen; once it is already
-# rightmost this costs the one move that fails.
+# leftmost this costs the one move that fails.
 if [[ -n "$win_id" && "$term_ws" == "$ws" ]]; then
   for _ in 1 2 3 4 5 6; do
-    aerospace move --window-id "$win_id" --boundaries workspace --boundaries-action fail right >/dev/null 2>&1 || break
+    aerospace move --window-id "$win_id" --boundaries workspace --boundaries-action fail left >/dev/null 2>&1 || break
   done
 fi
 
