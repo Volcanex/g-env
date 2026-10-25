@@ -152,7 +152,8 @@ if [[ "$(uname)" == "Linux" ]]; then
     real="$(cd "$repo" && pwd -P)"
     case "$seen" in *"|$real|"*) continue ;; esac
     seen="$seen|$real|"
-    name="$(basename "$repo")"
+    # By its real name: old names (brain-tools, gcommand) are links to the new.
+    name="$(basename "$real")"
     branch="$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null)"
     upstream="$(git -C "$repo" rev-parse --abbrev-ref -q "$branch@{upstream}" 2>/dev/null)" || continue
     git -C "$repo" fetch -q 2>/dev/null || continue
