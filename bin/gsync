@@ -138,4 +138,42 @@ for repo in "${REPOS[@]}"; do
   [[ "$behind" == "0" && "$ahead" == "0" && "$dirty" == "0" ]] && say "$name: level"
 done
 
+# Every other checkout beside them gets a push-only pass. Agents push as they
+# go, so this only catches commits a session left behind when it ended (wing
+# sat 39 ahead for days in Oct 2026). It never pulls or touches a working tree,
+# so a dirty tree is fine and stays quiet: that is someone's work in progress.
+# A diverged branch is left for a person, and a range gitleaks flags is held
+# back rather than published. h only: on the Mac the siblings live under
+# ~/Desktop beside unrelated clones.
+if [[ "$(uname)" == "Linux" ]]; then
+  for repo in "$parent"/*/; do
+    repo="${repo%/}"
+    [[ -d "$repo/.git" ]] || continue
+    real="$(cd "$repo" && pwd -P)"
+    case "$seen" in *"|$real|"*) continue ;; esac
+    seen="$seen|$real|"
+    name="$(basename "$repo")"
+    branch="$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+    upstream="$(git -C "$repo" rev-parse --abbrev-ref -q "$branch@{upstream}" 2>/dev/null)" || continue
+    git -C "$repo" fetch -q 2>/dev/null || continue
+    ahead="$(git -C "$repo" rev-list --count "$upstream..HEAD")"
+    [[ "$ahead" != "0" ]] || continue
+    if [[ "$(git -C "$repo" rev-list --count "HEAD..$upstream")" != "0" ]]; then
+      warn "$name: $ahead unpushed commit(s) but diverged from $upstream, fix by hand"
+      status=1
+    elif command -v gitleaks >/dev/null && ! gitleaks git --no-banner --log-level error --log-opts="$upstream..HEAD" "$repo" >/dev/null 2>&1; then
+      warn "$name: gitleaks flagged the $ahead unpushed commit(s), not pushed"
+      status=1
+    elif git -C "$repo" push -q 2>/dev/null; then
+      printf 'gsync: %s: pushed %s left-behind commit(s)\n' "$name" "$ahead"
+    else
+      warn "$name: $ahead unpushed commit(s), push failed"
+      status=1
+    fi
+    # Root's fetch and push write into .git; hand them back so services that
+    # run as the checkout's owner can still use it.
+    /usr/bin/find "$repo/.git" -user root -exec chown --reference="$repo" {} + 2>/dev/null
+  done
+fi
+
 exit $status

@@ -112,7 +112,7 @@ class ContextTests(unittest.TestCase):
         shared = ' '.join(context.source_section('shared', sources['shared']).split())
         for rule in rules:
             self.assertIn(' '.join(rule.split()), shared, 'a rule in context/rules.ledger is missing from shared.md')
-        for rule in ('PRs only when asked', 'commits and pushes before it finishes', 'Never skip hooks',
+        for rule in ('PRs only when asked', 'Push as you go', 'Never skip hooks',
                      'numbered threads', '**h**', 'URGENT'):  # gcore rules and fixture markers, shared.md is the ledger's
             self.assertIn(rule, output)
 
