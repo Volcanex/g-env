@@ -1,1 +1,12 @@
-chain
+#!/usr/bin/env bash
+# Strip agent attribution trailers (Co-Authored-By: Claude, Claude-Session,
+# "Generated with Claude Code") so commits carry the owner alone, then chain
+# to the repo's own commit-msg like every other hook here.
+sed -i -E '/^Co-Authored-By:.*(Claude|anthropic\.com)/Id; /^Claude-Session:/Id; /Generated with \[?Claude Code/Id' "$1"
+# drop the trailing blank lines the removed trailers leave behind
+sed -i -e ':a' -e '/^\n*$/{$d;N;ba' -e '}' "$1"
+own="$(git rev-parse --git-common-dir)/hooks/${0##*/}"
+if [[ -x $own ]]; then
+  exec "$own" "$@"
+fi
+exit 0
