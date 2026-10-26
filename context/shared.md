@@ -14,6 +14,10 @@ match with target=. Additive writes need no permission. Mention material capture
 supersede and edit_major need the operator's assent, then assent=True. mark_broken
 is unfenced. Never raw write_note/edit_note. Keep actor provenance honest.
 
+Push committed work to GitHub without asking, feature branches included; gsync also
+pushes left-behind main commits every 30 minutes. Never force-push or rewrite pushed
+history. Deploys, restarts and merges into a checkout that runs still need the operator.
+
 ## Research and verification
 
 Before library/API/framework work, check installed versions and current official
