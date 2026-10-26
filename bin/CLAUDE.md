@@ -582,7 +582,7 @@ or more than 3 models change. `--dry-run` prints the diff and changes nothing. T
 ladder is the non-dominated set over score, cost per task and AA time to first
 token; quota weighting per model is unpublished, so $ is only an API-price proxy.
 
-**`g-cron`** lists every scheduled job on h, b and b2 (hosts from gcore/manifest.json,
+**`g-cron`** lists every scheduled job on h, b and h2 (hosts from gcore/manifest.json,
 remote ones read by piping the script to `ssh -o BatchMode=yes … python3 - --collect`):
 systemd timers (system and --user), crontabs and `/etc/cron.d`, and the Pulse model
 jobs in `brain/.pulse/crons/*.md` with their run history from `state/cron-runs.jsonl`
