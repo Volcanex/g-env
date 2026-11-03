@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """gcore compliance checker.
 
-Scores a repo against the four gcore-compliant boxes (see gcore/conventions.md):
+Scores a repo against the five gcore-compliant boxes (see gcore/conventions.md):
 
   1. Nervous system  - CLAUDE.md (+ AGENTS.md) where behaviour is non-obvious;
                         an auto-compiled DOCS index at the repo root.
@@ -9,6 +9,8 @@ Scores a repo against the four gcore-compliant boxes (see gcore/conventions.md):
   3. GitHub           - repo origin under the instance's GitHub owner.
   4. Self-monitoring  - [tool.gcore].depends declares external dependency ids
                         (or [] if none), so a lapse routes to the alert spine.
+  5. Connections      - [[tool.gcore.connects]] declares how the repo connects
+                        (to, via, flow, optional dir), or connects = [] if none.
 
 Plus, reported as advisory: [tool.gcore] lineage, and managed:true in the
 instance manifest.
@@ -17,7 +19,7 @@ The GitHub owner is G_GITHUB_OWNER, else the owner of the instance's own
 origin; the instance is found through g-env's resolver (context/instance.py).
 
 Stdlib only (works without tomllib on Python < 3.11 via a regex fallback).
-Exits 0 if all four hard boxes pass, 1 otherwise.
+Exits 0 if all five hard boxes pass, 1 otherwise.
 """
 
 import argparse
@@ -47,6 +49,8 @@ SKIP_DIRS = {
     "vendor", ".cache", "site-packages",
 }
 MAX_CANDIDATES = 15
+VIAS = ("http", "sse", "websocket", "import", "path", "vendor", "file", "ssh", "db", "mcp")
+DIRS = ("out", "in", "both")
 
 
 def run_git(repo, *args):
@@ -205,11 +209,66 @@ def normalize_url(url):
     return re.sub(r"\.git$", "", url.strip().rstrip("/")).lower()
 
 
-def check_manifest(repo, remote_url, manifest_path, results):
-    mpath = None
-    candidates = []
-    if manifest_path:
-        candidates.append(Path(manifest_path))
+def check_connections(repo, results, manifest_path):
+    """Box 5: [[tool.gcore.connects]] says how the repo connects to the rest of the system.
+    Each entry needs `to` (a manifest id or dependency catalog id), `via` (one of VIAS) and
+    `flow`; `dir` is optional. connects = [] asserts none. The graph itself is
+    gcore's `python3 -m gcore_graph`, which also reports drift against the code."""
+    pp = repo / "pyproject.toml"
+    if not pp.is_file():
+        results.append((FAIL, "No pyproject.toml: cannot declare [[tool.gcore.connects]]"))
+        return
+    data, text = load_pyproject(pp)
+    if data is None:
+        if re.search(r"^\s*(\[\[tool\.gcore\.connects\]\]|connects\s*=)", text, re.M):
+            results.append((PASS, "connects declared (no TOML parser: entries not validated)"))
+        else:
+            results.append((FAIL, "[[tool.gcore.connects]] not declared"))
+        return
+    gcore = data.get("tool", {}).get("gcore", {})
+    if "connects" not in gcore:
+        results.append((FAIL, "[[tool.gcore.connects]] not declared: one table per connection "
+                              "(to, via, flow), or connects = [] if none"))
+        return
+    connects = gcore["connects"]
+    if connects == []:
+        results.append((PASS, "connects = [] (no connections, explicitly)"))
+        return
+    ids = None
+    mpath = find_manifest(repo, manifest_path)
+    if mpath:
+        try:
+            m = json.loads(mpath.read_text(encoding="utf-8"))
+            ids = {e.get("id") for key in ("hosts", "services", "dependencies", "projects", "system")
+                   for e in (m.get(key) or []) if isinstance(e, dict)}
+        except (OSError, json.JSONDecodeError):
+            pass
+    if ids is None:
+        results.append((WARN, "manifest not found: `to` ids not checked"))
+    bad = 0
+    for i, c in enumerate(connects):
+        where = f"connects[{i}] to={c.get('to')!r}"
+        problems = []
+        if not c.get("to"):
+            problems.append("no `to`")
+        elif ids is not None and c["to"] not in ids:
+            problems.append("`to` is not a manifest or catalog id")
+        if c.get("via") not in VIAS:
+            problems.append(f"`via` must be one of {', '.join(VIAS)}")
+        if not str(c.get("flow") or "").strip():
+            problems.append("no `flow` (say what moves)")
+        if c.get("dir", "out") not in DIRS:
+            problems.append("`dir` must be out, in or both")
+        if problems:
+            bad += 1
+            results.append((FAIL, f"{where}: " + "; ".join(problems)))
+    if not bad:
+        results.append((PASS, f"{len(connects)} connection(s) declared: "
+                              + ", ".join(f"{c['to']} ({c['via']})" for c in connects)))
+
+
+def find_manifest(repo, manifest_path):
+    candidates = [Path(manifest_path)] if manifest_path else []
     candidates += [
         repo.parent / "gp-core" / "manifest.json",
         repo.parent / "gcore" / "manifest.json",
@@ -217,10 +276,11 @@ def check_manifest(repo, remote_url, manifest_path, results):
         Path.home() / "gcore" / "manifest.json",
         instance("manifest") if instance else None,
     ]
-    for c in candidates:
-        if c and c.is_file():
-            mpath = c
-            break
+    return next((c for c in candidates if c and c.is_file()), None)
+
+
+def check_manifest(repo, remote_url, manifest_path, results):
+    mpath = find_manifest(repo, manifest_path)
     if mpath is None:
         results.append((WARN, "gcore/manifest.json not found (pass --manifest to check managed status)"))
         return
@@ -282,6 +342,10 @@ def main():
     check_dependencies(repo, dep)
     boxes.append(("4. Self-monitoring (depends)", dep))
 
+    conn = []
+    check_connections(repo, conn, args.manifest)
+    boxes.append(("5. Connections (connects)", conn))
+
     mf = []
     check_manifest(repo, remote, args.manifest, mf)
     boxes.append(("manifest / managed", mf))
@@ -298,7 +362,7 @@ def main():
     if hard_fail:
         print("RESULT: NOT compliant. Fix the [FAIL] items above.")
         return 1
-    print("RESULT: all four hard boxes pass. Address [WARN]s, then set managed:true in the manifest.")
+    print("RESULT: all five hard boxes pass. Address [WARN]s, then set managed:true in the manifest.")
     return 0
 
 

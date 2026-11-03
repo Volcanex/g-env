@@ -3,3 +3,25 @@ name = "genv"
 version = "1.0.0"
 description = "Environment wiring: dotfiles, shell, tooling"
 dependencies = ["rich"]
+
+[tool.gcore]
+
+[[tool.gcore.connects]]
+to = "gcore"
+via = "file"
+flow = "reads manifest.json for workspaces, sessions and host wiring"
+
+[[tool.gcore.connects]]
+to = "brain"
+via = "file"
+flow = "g-cron runs model jobs from brain/.pulse/crons"
+
+[[tool.gcore.connects]]
+to = "h"
+via = "ssh"
+flow = "sessions, workspaces and gsync reach hosts over ssh"
+
+[[tool.gcore.connects]]
+to = "b"
+via = "ssh"
+flow = "sessions, workspaces and gsync reach hosts over ssh"

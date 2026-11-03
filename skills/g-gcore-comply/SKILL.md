@@ -1,16 +1,16 @@
 ---
 name: g-gcore-comply
-description: "Check and bring a repo into gcore compliance (managed:true): the four boxes from gcore/conventions.md: nervous system, pip-installable, GitHub under the instance's owner, and self-monitoring (tool.gcore.depends), plus lineage and the manifest entry. Use when onboarding a repo into the g-system or auditing one that should be managed."
+description: "Check and bring a repo into gcore compliance (managed:true): the five boxes from gcore/conventions.md: nervous system, pip-installable, GitHub under the instance's owner, self-monitoring (tool.gcore.depends) and connections (tool.gcore.connects), plus lineage and the manifest entry. Use when onboarding a repo into the g-system or auditing one that should be managed."
 ---
 
 # g-gcore-comply
 
 Audits a repo against the **gcore-compliant** definition and brings it the rest of
 the way. A repo is compliant (`managed: true` in `gcore/manifest.json`) only when all
-four boxes are ticked. The definition lives in `gcore/conventions.md`. That file is
+five boxes are ticked. The definition lives in `gcore/conventions.md`. That file is
 the source of truth; this skill operationalises it.
 
-## The four boxes
+## The five boxes
 
 1. **Nervous system**: `CLAUDE.md` (and `AGENTS.md`) in every directory with
    non-obvious behaviour; nested dirs get nested docs. The repo root's `CLAUDE.md`
@@ -22,6 +22,13 @@ the source of truth; this skill operationalises it.
 4. **Self-monitoring**: `[tool.gcore].depends` lists the repo's external
    dependencies by catalog id (or `[]` if it has none), so a lapse routes to the
    alert spine. The catalog lives in `manifest.json → dependencies`.
+5. **Connections**: one `[[tool.gcore.connects]]` per connection the code makes:
+   `to` (a manifest id or catalog id), `via` (http, sse, websocket, import, path,
+   vendor, file, ssh, db, mcp), `flow` (what moves, plain words), optional `dir`
+   (out, in, both). `connects = []` asserts none. Write them from the code: HTTP
+   base URLs, Package.swift/project.yml path deps, vendored g-design, ssh, sqlite,
+   MCP, sibling checkouts it reads. `path` is a build-time dependency, `file` a
+   runtime read of another checkout.
 
 Plus: declare lineage in `[tool.gcore]` (optional but recommended), and add the repo
 to `gcore/manifest.json` with `managed: true`.
@@ -56,7 +63,12 @@ to `gcore/manifest.json` with `managed: true`.
      is a positive assertion, not the same as omitting the key. If a dependency isn't
      in the catalog yet, add a catalog entry (with a `probe`) first, then reference it.
 
-3. **Re-run the checker** until the four boxes pass.
+   - *connects not declared* → read the code and add one table per connection;
+     then run gcore's `python3 -m gcore_graph --pretty` and fix any `drift` edge
+     on this repo (observed in code but undeclared, or a declared path/vendor
+     edge the code does not show).
+
+3. **Re-run the checker** until the five boxes pass.
 
 4. **Register it.** Add/confirm the repo in `gcore/manifest.json` under `projects`
    with `managed: true` (system repos live under `system` and are managed by
