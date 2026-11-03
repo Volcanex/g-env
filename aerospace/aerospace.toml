@@ -123,8 +123,10 @@ cmd-right = 'exec-and-forget /Users/gabriel/.local/bin/ae-cycle-ws next'
 # windows meant clicking one first. Crossing costs one keypress and typing
 # still lands in the terminal by default, which is why focus is not simply
 # parked on the Mac window at the end of a switch.
-cmd-leftSquareBracket  = 'focus --ignore-floating --boundaries all-monitors-outer-frame left'
-cmd-rightSquareBracket = 'focus --ignore-floating --boundaries all-monitors-outer-frame right'
+cmd-leftSquareBracket  = 'exec-and-forget /Users/gabriel/.local/bin/ae-focus-dir left'
+cmd-rightSquareBracket = 'exec-and-forget /Users/gabriel/.local/bin/ae-focus-dir right'
+# (ae-focus-dir: same directional focus, but from a floating window it jumps
+# into the tiles instead of doing nothing.)
 
 # Send the focused window to the other screen.
 # With the on-window-detected rule below, a window can no longer be *born* on

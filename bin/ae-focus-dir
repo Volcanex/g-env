@@ -1,0 +1,28 @@
+#!/usr/bin/env zsh
+# ⌘[ / ⌘]: directional focus that also works from a floating window.
+# Usage: ae-focus-dir left|right
+# A floating window has no place in the tiling layout, so `focus left/right`
+# from one has nothing to step from and silently does nothing, and the keys went
+# dead whenever WhatsApp (or anything) came up floating. From a floating window
+# we instead jump into the tiles: this workspace's terminal tab if it has one
+# (either half, N or Nx), else its first tiled window.
+dir="${1:-right}"
+# The fork's CLI in ~/.local/bin must match the server (see bootstrap.sh).
+ae="$HOME/.local/bin/aerospace"
+
+read -r layout ws < <($ae list-windows --focused --format '%{window-layout} %{workspace}' 2>/dev/null; echo)
+if [[ "$layout" != floating ]]; then
+  exec $ae focus --ignore-floating --boundaries all-monitors-outer-frame "$dir"
+fi
+
+n="${ws%x}"
+wins=$($ae list-windows --all --format '%{window-id} %{workspace} %{window-layout}' 2>/dev/null \
+  | awk -v n="$n" '($2==n || $2==n"x") && $3!="floating" {print $1}')
+[[ -z "$wins" ]] && exit 0
+term=$(awk '{print $2}' ~/.ae-tab-"$n" 2>/dev/null)
+if [[ -n "$term" ]] && grep -qx "$term" <<<"$wins"; then
+  target=$term
+else
+  target=$(head -1 <<<"$wins")
+fi
+$ae focus --window-id "$target"
