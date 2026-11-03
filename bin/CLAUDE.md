@@ -485,9 +485,11 @@ deliberately.
 The same reasoning is why ⌘[ / ⌘] carry
 `--boundaries all-monitors-outer-frame`: focus ends on the terminal, so without
 crossing the screen edge the terminal is a dead end and reaching the workspace's
-other windows meant clicking one. Focus is not simply parked on the Mac window
-at the end of a switch instead, because then ⌘4 followed by typing would go into
-Chrome.
+other windows meant clicking one. (2026-10-22: a switch now restores the
+workspace's last-focused window even when you left from a terminal. The old
+"leave from a terminal, arrive at a terminal" rule meant almost every switch
+landed on the terminal. Trade-off: ⌘N-then-type goes to whatever you last had
+focused there.)
 
 **Plugging a display in invalidates a cache nothing invalidates.** `ae-switch`
 caches AeroSpace's monitor count in `~/.cache/genv/monitors` (asking cost 20ms

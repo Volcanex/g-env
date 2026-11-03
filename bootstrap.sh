@@ -49,6 +49,17 @@ link "$REPO/bin/ae-chrome"            "$HOME/.local/bin/ae-chrome"
 # silently at startup or on every cmd-arrow.
 link "$REPO/bin/ae-startup"           "$HOME/.local/bin/ae-startup"
 link "$REPO/bin/ae-cycle-ws"          "$HOME/.local/bin/ae-cycle-ws"
+link "$REPO/bin/ae-focus-dir"         "$HOME/.local/bin/ae-focus-dir"
+# ae-follow is named by aerospace.toml too (exec-on-workspace-change). It was
+# missing here and survived only because it had been symlinked by hand: on a
+# fresh Mac every Dock click half-moved, which is the exact failure the comment
+# above warns about. ae-paste, sessions and ae-deploy were hand-linked as well.
+link "$REPO/bin/ae-follow"            "$HOME/.local/bin/ae-follow"
+# ae-pin-term is called by bare name from ae-chrome and ae-follow.
+link "$REPO/bin/ae-pin-term"          "$HOME/.local/bin/ae-pin-term"
+link "$REPO/bin/ae-paste"             "$HOME/.local/bin/ae-paste"
+link "$REPO/bin/ae-deploy"            "$HOME/.local/bin/ae-deploy"
+link "$REPO/bin/sessions"             "$HOME/.local/bin/sessions"
 bash "$REPO/bin/ae-presence-install"
 link "$REPO/bin/genv"                 "$HOME/.local/bin/genv"
 link "$REPO/bin/gsync"                "$HOME/.local/bin/gsync"
