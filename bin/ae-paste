@@ -82,7 +82,7 @@ if [ -n "$ws" ]; then
   if [ -z "$host" ]; then
     host="$(python3 -c "
 import json,sys
-m=json.load(open('$HOME/Desktop/gcore/manifest.json'))
+m=json.load(open('$("$HOME/.local/bin/g-instance" manifest)'))
 w=next((w for w in m['workspaces'] if str(w['number'])=='$ws'),None)
 print((w or {}).get('host') or '')
 " 2>/dev/null || true)"

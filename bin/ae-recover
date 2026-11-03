@@ -24,7 +24,7 @@ if command -v aerospace &>/dev/null; then
   read -r host label <<< $(python3 -c "
 import json, sys
 try:
-  d = json.load(open('$HOME/Desktop/gcore/manifest.json'))
+  d = json.load(open('$("$HOME/.local/bin/g-instance" manifest)'))
   w = next(w for w in d['workspaces'] if str(w['number'])=='$ws')
   if not w.get('host'): sys.exit(1)
   print(w['host'], w.get('name', w['host']))

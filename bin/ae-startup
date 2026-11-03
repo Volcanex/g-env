@@ -39,7 +39,7 @@ while read -r n; do
 done < <(python3 -c "
 import json
 try:
-  d=json.load(open('$HOME/Desktop/gcore/manifest.json'))
+  d=json.load(open('$("$HOME/.local/bin/g-instance" manifest)'))
   for w in d['workspaces']:
     if w.get('hot'): print(w['number'])
 except: pass

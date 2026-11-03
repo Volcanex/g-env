@@ -192,7 +192,7 @@ fi
 # interpreter here cost 43ms of every single switch to read a file that changes
 # maybe monthly.
 ws_cache="$HOME/.cache/genv/ws-hosts"
-manifest="$HOME/Desktop/gcore/manifest.json"
+manifest="$("$HOME/.local/bin/g-instance" manifest)"
 
 # ── Chrome: the tab swap, fired as early as anything can be ─────────────────
 # This is the one part of the switch that talks to another application, and an
