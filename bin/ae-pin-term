@@ -1,0 +1,20 @@
+#!/usr/bin/env zsh
+# ae-pin-term <N>: put workspace N's terminal tab window on the left-hand edge.
+#
+# The terminal sits at the left of a workspace it shares with other windows.
+# ae-switch enforces that inline, under its held cover. Anything else that can
+# land a tiled window on a workspace after the terminal (cmd+b via ae-chrome, a
+# Dock click via ae-follow) calls this afterwards; a new window otherwise joins
+# wherever AeroSpace puts it, which is not always right of the terminal. Moving
+# by --window-id does not change focus.
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
+ws="${1%x}"
+[[ "$ws" =~ '^[0-9]+$' ]] || exit 0
+# ~/.ae-tab-<N> is "<tab-id> <window-id>", written by ae-switch.
+win_id=$(awk '{print $2; exit}' "$HOME/.ae-tab-$ws" 2>/dev/null)
+[[ -n "$win_id" ]] || exit 0
+# Stops at the workspace edge (fail, not cross to the other monitor); the loop
+# bound is just a backstop.
+for _ in 1 2 3 4 5 6 7 8; do
+  aerospace move --window-id "$win_id" --boundaries workspace --boundaries-action fail left >/dev/null 2>&1 || break
+done

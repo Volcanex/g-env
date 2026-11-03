@@ -39,6 +39,136 @@ echo $$ > /tmp/ae-switch.lock
 # back. ae-fade caps a hold on its own side too, for the paths that never reach
 # a trap at all.
 trap 'rm -f /tmp/ae-switch.lock; fade release' EXIT
+
+# ── Chrome harmonisation ────────────────────────────────────────────────────
+# `genv chrome on`. Absent toggle file = off, and every hook below is inert:
+# the switch path is byte-for-byte what it was.
+#
+# The mtime read has to happen BEFORE ~/.ae-current is overwritten just below.
+# During a scrub (cmd+1..9 held down) there is no cover between frames, so a tab
+# flip and a window teleport would both be visible and unwanted; 0.45s mirrors
+# ae-fade.swift's burstWindow. It also removes the two-switches race that would
+# otherwise write one workspace's tab memory onto another's.
+#
+# ws0 is excluded entirely: it is floating and exits at the workspace-0 branch
+# below before any of this would run.
+harmony=""
+if [[ -f "$HOME/.genv-chrome-harmony" && "$ws" != "0" && ! -f /tmp/ae-chrome-denied ]]; then
+  _last=$(stat -f %Fm "$HOME/.ae-current" 2>/dev/null || echo 0)
+  # The workspace we are leaving, for tab memory. The authoritative answer
+  # (old_ws, from the focused-window query) does not arrive for another 150ms,
+  # and waiting for it is the whole latency problem below: this file holds the
+  # last switch's target, which is the same thing in every case that matters.
+  _prev_ws=$(cat "$HOME/.ae-current" 2>/dev/null)
+  awk -v b="$_last" 'BEGIN{ "date +%s.%N" | getline a; exit !(a - b > 0.45) }' && harmony=1
+fi
+
+# An Apple event to a dead app LAUNCHES it, hidden; that is what minted
+# duplicate Ghostty instances (bin/CLAUDE.md). Never speak to Chrome unless
+# Chrome is already running.
+[[ -n "$harmony" ]] && ! pgrep -x "Google Chrome" >/dev/null 2>&1 && harmony=""
+
+# workspace → chrome profile slug, cached on manifest mtime for the same reason
+# the host map is: a python start cost 43ms of every switch. Its own file rather
+# than a third column on ws-hosts, because an empty host there would shift the
+# columns and the host lookup reads by position.
+chrome_profile_of() {
+  local cache="$HOME/.cache/genv/ws-chrome"
+  if [[ ! -s "$cache" || "$manifest" -nt "$cache" ]]; then
+    mkdir -p "${cache%/*}"
+    python3 -c "
+import json
+try:
+  d=json.load(open('$manifest'))
+  for w in d['workspaces']:
+    p=(w.get('chrome_profile') or 'Default').lower().replace(' ','-')
+    print(w['number'], p)
+except Exception: pass
+" > "$cache" 2>/dev/null
+  fi
+  awk -v w="$1" '$1==w {print $2}' "$cache" 2>/dev/null
+}
+
+# "<aerospace-id> <chrome-id>" for the window this workspace's profile owns.
+# Written by ae-chrome at creation, which is the only moment a window's profile
+# is knowable: AeroSpace cannot see it, and the title suffix is not a truth.
+chrome_win_of() {
+  local slug; slug=$(chrome_profile_of "$1")
+  [[ -n "$slug" ]] && head -1 "$HOME/.ae-cwin-$slug" 2>/dev/null
+}
+
+# One Apple event for both halves of the tab swap: read the workspace we are
+# leaving, set the one we are arriving at. `active tab index` is the only lever
+# touched: it was gated empirically (it does not activate Chrome, reorder
+# windows or move the focused workspace) and the properties that WOULD do those
+# things sit on the same object one typo away.
+#
+# The stored index is a hint, not an address: Chrome tab ids are read-only and
+# cannot be addressed, so memory is "<index> <url>" and the url wins when it is
+# still open. `with timeout of 2 seconds` plus the bounded wait at the end of
+# the switch are both needed: a modal JS dialog or a wedged renderer blocks the
+# Apple event for AppleScript's 120s default while we still hold
+# /tmp/ae-switch.lock, which is a whole-environment wedge from one stuck tab.
+chrome_hook() {
+  local old_cid="$1" old_ws="$2" new_cid="$3" memfile="$4"
+  local want_idx="" want_url="" out rc
+  [[ -n "$new_cid" && -f "$memfile" ]] && read -r want_idx want_url < "$memfile"
+  out=$(osascript - "$old_cid" "$new_cid" "$want_idx" "$want_url" <<'APPLESCRIPT' 2>&1
+on run argv
+  set oldId to item 1 of argv
+  set newId to item 2 of argv
+  set wantIdx to item 3 of argv
+  set wantUrl to item 4 of argv
+  set res to ""
+  with timeout of 2 seconds
+    tell application "Google Chrome"
+      if oldId is not "" then
+        try
+          set w to window id (oldId as integer)
+          set res to (active tab index of w as text) & " " & (URL of active tab of w)
+        end try
+      end if
+      if newId is not "" and wantIdx is not "" then
+        try
+          set w2 to window id (newId as integer)
+          -- One Apple event for the whole tab strip, not one per tab: asking
+          -- for the URL of tab i in a loop is a round trip each time, and on a
+          -- nine-tab window that alone was most of the added latency.
+          set urls to URL of every tab of w2
+          set n to count of urls
+          set target to 0
+          if wantUrl is not "" then
+            repeat with i from 1 to n
+              if (item i of urls) is wantUrl then
+                set target to i
+                exit repeat
+              end if
+            end repeat
+          end if
+          if target is 0 and (wantIdx as integer) is less than or equal to n then
+            set target to wantIdx as integer
+          end if
+          if target > 0 then set active tab index of w2 to target
+        end try
+      end if
+    end tell
+  end timeout
+  return res
+end run
+APPLESCRIPT
+)
+  rc=$?
+  # -1743 is "not authorised to send Apple events". Latch it for the session
+  # rather than paying a failing round trip on every switch; `genv chrome`
+  # reports it, the way `genv fade` reports the Screen Recording verdict.
+  if (( rc != 0 )) && [[ "$out" == *-1743* ]]; then
+    : > /tmp/ae-chrome-denied
+    return
+  fi
+  [[ -n "$old_cid" && -n "$out" ]] && printf '%s\n' "$out" > "$HOME/.ae-ctab-$old_ws"
+  return 0
+}
+
 printf '%s\n' "$ws" > "$HOME/.ae-current"
 
 # Start the crossfade snapshot NOW, in parallel with the lookups below. It has
@@ -63,6 +193,27 @@ fi
 # maybe monthly.
 ws_cache="$HOME/.cache/genv/ws-hosts"
 manifest="$HOME/Desktop/gcore/manifest.json"
+
+# ── Chrome: the tab swap, fired as early as anything can be ─────────────────
+# This is the one part of the switch that talks to another application, and an
+# osascript round trip is ~110ms, more than half an ordinary switch. Bolted on
+# at the end it cost 235ms → 390ms; overlapping the AeroSpace work below brings
+# it back to about 250ms, because by the time the bounded wait at the bottom
+# runs there is usually nothing left to wait for. Everything it needs is a file
+# read; the window *move* needs the window table and stays further down.
+cpid=""
+if [[ -n "$harmony" ]]; then
+  read -r _ new_cid < <(chrome_win_of "$ws"; echo)
+  old_cid=""
+  if [[ -n "$_prev_ws" && "$_prev_ws" != "$ws" && -f "$HOME/.ae-ctab-$_prev_ws" ]]; then
+    read -r _ old_cid < <(chrome_win_of "$_prev_ws"; echo)
+  fi
+  [[ -f "$HOME/.ae-ctab-$ws" ]] || new_cid=""
+  if [[ -n "$old_cid" || -n "$new_cid" ]]; then
+    chrome_hook "$old_cid" "$_prev_ws" "$new_cid" "$HOME/.ae-ctab-$ws" &
+    cpid=$!
+  fi
+fi
 if [[ ! -s "$ws_cache" || "$manifest" -nt "$ws_cache" ]]; then
   mkdir -p "${ws_cache%/*}"
   python3 -c "
@@ -126,7 +277,46 @@ rm -f "$focus_tmp"
 # on return steals focus off the terminal.
 old_ws="${old_ws%x}"
 if [[ -n "$old_ws" && "$old_ws" != "$ws" && -n "$old_focus" ]]; then
-  echo "$old_focus" > ~/.ae-focus-"$old_ws"
+  # Under harmony a managed Chrome window is about to leave with us, so writing
+  # it here would leave that workspace restoring focus onto a window that is no
+  # longer on it, and after the id goes stale, onto nothing at all.
+  if [[ -n "$harmony" ]] && grep -qE "^$old_focus " "$HOME"/.ae-cwin-* 2>/dev/null; then
+    :
+  else
+    echo "$old_focus" > ~/.ae-focus-"$old_ws"
+  fi
+fi
+
+# Chrome's share of the switch runs HERE, not after the window sweep, so its
+# Apple event overlaps the ~200ms of AeroSpace work below instead of being added
+# to it. Measured: bolted on at the end it cost ~160ms a switch (235ms → 390ms);
+# overlapped, the bounded wait at the bottom is usually already satisfied. It
+# needs only ALL_WINS and old_ws, both of which are in hand by this line.
+# ── Chrome: bring the profile's window with us ──────────────────────────────
+# The tab swap for this switch is already in flight (see above); this is the
+# window itself, which needs the window table. The summoned set is exactly
+# "workspaces with an ~/.ae-ctab-<N> file", created by cmd+b. Nothing
+# self-enrols, so a workspace you have never asked for Chrome on never sees a
+# Chrome window arrive.
+if [[ -n "$harmony" && -f "$HOME/.ae-ctab-$ws" ]]; then
+  read -r cwin_ae _ < <(chrome_win_of "$ws"; echo)
+  if [[ -n "$cwin_ae" ]]; then
+    if awk -v id="$cwin_ae" '$1==id {f=1} END{exit !f}' <<<"$ALL_WINS"; then
+      cur=$(awk -v id="$cwin_ae" '$1==id {print $2}' <<<"$ALL_WINS")
+      if [[ "$cur" != "$ws" && "$cur" != "${ws}x" ]]; then
+        aerospace move-node-to-workspace --window-id "$cwin_ae" "$ws" 2>/dev/null
+        # Patch the snapshot in memory rather than re-querying. The restored-focus
+        # lookup below reads ALL_WINS, and a moved Chrome window makes the "only
+        # tab windows move above" comment false; re-running all_wins would cost
+        # 20ms on the hot path to learn one field we already know.
+        ALL_WINS=$(awk -v id="$cwin_ae" -v w="$ws" '$1==id{$2=w}1' <<<"$ALL_WINS")
+      fi
+    else
+      # Closed by hand: forget it, and never respawn on a switch. cmd+b is the
+      # only thing allowed to create a window.
+      rm -f "$HOME/.ae-cwin-$(chrome_profile_of "$ws")"
+    fi
+  fi
 fi
 
 # With a second monitor, flip the twin workspace (Nx, pinned to 'secondary')
@@ -495,6 +685,16 @@ if [[ -n "$focus_saved" && "$focus_saved" != "$win_id" ]] \
    && restored_ws=$(awk -v f="$focus_saved" -v w="$ws" '$1==f && ($2==w || $2==w"x") {print $2; found=1} END{exit !found}' <<<"$ALL_WINS"); then
   aerospace focus --window-id "$focus_saved" 2>/dev/null
   restored=1
+  # Focusing the tab window above (needed to select this workspace's Ghostty
+  # tab) makes macOS activate Ghostty, and that activation can arrive *after*
+  # the focus we just made and take it back. The restore ran, then lost. Seen
+  # as "it always lands on the terminal"; under `bash -x` it worked, because
+  # the trace was slow enough for the event to land first. Check and re-assert.
+  for _ in 1 2 3 4 5; do
+    sleep 0.04
+    [[ "$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)" == "$focus_saved" ]] && continue
+    aerospace focus --window-id "$focus_saved" 2>/dev/null
+  done
 fi
 
 # Tab creation/reordering emits trailing macOS focus events that can bounce the
@@ -530,6 +730,17 @@ if [[ -n "$restored" ]]; then
   settle "$restored_ws" "$focus_saved"
 elif [[ -n "$created" ]]; then
   settle "$term_ws" "$win_id"
+fi
+
+# Give the Chrome Apple event a bounded moment to land before the EXIT trap
+# dissolves the cover, then abandon it detached. Waiting unbounded here is the
+# wedge described on chrome_hook; not waiting at all means the tab visibly flips
+# after the crossfade has finished.
+if [[ -n "$cpid" ]]; then
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    kill -0 "$cpid" 2>/dev/null || break
+    sleep 0.02
+  done
 fi
 
 # Refresh the monitor-count cache off the critical path, so plugging in a

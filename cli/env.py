@@ -46,6 +46,16 @@ MONITOR_CACHE = Path.home() / ".cache/genv/monitors"
 TERM_HOME_FILE = Path.home() / ".genv-term-home"
 TERM_HOMES = ("main", "secondary")
 
+# Chrome harmonisation: one Chrome window per profile, travelling to the
+# workspaces you have summoned it on with cmd+b, each remembering its own tab.
+# Absent file = off, and every hook in ae-switch/ae-follow/ae-chrome is inert:
+# the switch path is exactly what it was. Read live, so it lands on the next
+# cmd+N with no reload, same pattern as the two files above.
+HARMONY_FILE = Path.home() / ".genv-chrome-harmony"
+# Latched by ae-switch when Chrome refuses an Apple event (-1743), so a denied
+# grant costs one failed round trip per session instead of one per switch.
+HARMONY_DENIED = Path("/tmp/ae-chrome-denied")
+
 # Which side of the laptop the iPad sits on. Read by ae-sidecar after every
 # connect, so an iPad waking up on its own still lands on the right side without
 # anyone typing anything. Absent = right: a second screen goes on the right
@@ -142,6 +152,51 @@ def set_term_home(value):
 
 def toggle_term_home():
     return set_term_home("main" if term_home() == "secondary" else "secondary")
+
+
+def harmony():
+    return HARMONY_FILE.exists()
+
+
+def set_harmony(on):
+    """Enabling has to sweep focus memory, not just write the file.
+
+    ~/.ae-focus-<N> can already name a Chrome window (it is what cmd+b leaves
+    behind), and under harmony that window is about to start travelling. Left
+    in place, those workspaces keep restoring focus onto a window that is no
+    longer on them, and onto nothing at all once the id goes stale.
+    """
+    if on:
+        managed = set()
+        for f in Path.home().glob(".ae-cwin-*"):
+            try:
+                managed |= {line.split()[0] for line in f.read_text().splitlines() if line.strip()}
+            except OSError:
+                pass
+        for f in Path.home().glob(".ae-focus-*"):
+            try:
+                if f.read_text().strip() in managed:
+                    f.unlink()
+            except OSError:
+                pass
+        HARMONY_FILE.write_text("on\n")
+    else:
+        HARMONY_FILE.unlink(missing_ok=True)
+        # ~/.ae-ctab-* is deliberately kept: it is the summoned set, so toggling
+        # back on resumes where it left off rather than needing a re-summon.
+    HARMONY_DENIED.unlink(missing_ok=True)
+    return "on" if on else "off"
+
+
+def harmony_state():
+    if not harmony():
+        return "off"
+    if HARMONY_DENIED.exists():
+        return "on, BLOCKED: allow Chrome under Automation in Privacy & Security"
+    summoned = sorted(
+        f.name.rsplit("-", 1)[-1] for f in Path.home().glob(".ae-ctab-*")
+    )
+    return f"on: {', '.join(summoned)}" if summoned else "on, nothing summoned yet"
 
 
 def ipad_side():
@@ -437,7 +492,8 @@ def render():
     # setting that currently changes nothing.
     scope = "" if monitors() > 1 else "  [faint]single monitor, no effect[/faint]"
     console.print(f"[label]terminal[/label]   [text]{term_home()}[/text]{scope}")
-    console.print(f"[label]ipad side[/label]  [text]{ipad_side()}[/text]{scope}\n")
+    console.print(f"[label]ipad side[/label]  [text]{ipad_side()}[/text]{scope}")
+    console.print(f"[label]chrome[/label]     [text]{harmony_state()}[/text]\n")
 
 
 def up():
@@ -511,6 +567,21 @@ def term(rest):
     return 0
 
 
+def chrome(rest):
+    if not rest:
+        console.print(f"[text]{harmony_state()}[/text]")
+        return 0
+    if rest[0] == "toggle":
+        value = set_harmony(not harmony())
+    elif rest[0] in ("on", "off"):
+        value = set_harmony(rest[0] == "on")
+    else:
+        console.print("[faint]usage: genv chrome \\[on|off|toggle][/faint]")
+        return 1
+    console.print(f"[faint]chrome harmonisation →[/faint] [hot]{value}[/hot]")
+    return 0
+
+
 def fade(rest):
     if rest and rest[0] not in ("restart",):
         console.print("[faint]usage: genv fade \\[restart][/faint]")
@@ -530,6 +601,7 @@ VERBS = {
     "term": term,
     "tiling": tiling,
     "fade": fade,
+    "chrome": chrome,
 }
 
 

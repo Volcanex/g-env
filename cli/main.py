@@ -98,9 +98,10 @@ def loop():
 
 
 USAGE = (
-    "usage: genv \\[up|down|status|ipad|term|tiling|fade|ws|env|sessions|keys|power|sys|config]\n"
+    "usage: genv \\[up|down|status|ipad|term|tiling|fade|chrome|ws|env|sessions|keys|power|sys|config]\n"
     "       genv ipad \\[on|off|toggle]   genv ipad side \\[left|right|toggle]\n"
     "       genv term \\[main|secondary|toggle]   genv fade \\[restart]\n"
+    "       genv chrome \\[on|off|toggle]   (one Chrome window per profile)\n"
     "       genv ws \\[<N>] \\[free]   (hot workspaces 6/7/8)"
 )
 

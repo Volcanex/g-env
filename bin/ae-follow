@@ -54,7 +54,13 @@ IFS='|' read -r focused_id focused_app < <(
 # in front of it and holding the keyboard. Write the window we are travelling
 # FOR into that memory first, and the switch lands on it.
 travel() {
-  [[ -n "$focused_id" ]] && printf '%s\n' "$focused_id" > "$HOME/.ae-focus-$ws"
+  # Under harmony a managed Chrome window travels with the switch, so naming it
+  # as the destination's focus memory would pin a window that is about to move
+  # (and once its id goes stale, restore focus onto nothing).
+  if [[ -n "$focused_id" ]] && ! { [[ -f "$HOME/.genv-chrome-harmony" ]] &&
+        grep -qE "^$focused_id " "$HOME"/.ae-cwin-* 2>/dev/null; }; then
+    printf '%s\n' "$focused_id" > "$HOME/.ae-focus-$ws"
+  fi
   exec ae-switch "$ws"
 }
 
@@ -93,6 +99,19 @@ if [[ "$focused_app" == "Google Chrome" ]]; then
   echo $$ > /tmp/ae-switch.lock
   trap 'rm -f /tmp/ae-switch.lock' EXIT
   aerospace workspace "$here" >/dev/null 2>&1
+  # Under harmony there is one window per profile and it is already the one
+  # macOS just raised, so the answer is to bring *it* back rather than to open
+  # another: `ae-chrome` would spawn a second window of a profile that is only
+  # ever meant to have one. Only for a window we manage; a popup, an incognito
+  # window or a --app= PWA falls through to the ordinary path.
+  if [[ -f "$HOME/.genv-chrome-harmony" ]] &&
+     grep -qE "^$focused_id " "$HOME"/.ae-cwin-* 2>/dev/null; then
+    aerospace move-node-to-workspace --window-id "$focused_id" "$here" 2>/dev/null
+    ae-pin-term "$here"
+    aerospace focus --window-id "$focused_id" 2>/dev/null
+    printf '%s\n' "$here" > "$HOME/.ae-current"
+    exit 0
+  fi
   exec ae-chrome
 fi
 

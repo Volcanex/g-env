@@ -69,6 +69,13 @@ pgrep -x ae-fade >/dev/null || "$HOME/.local/bin/ae-fade" >/dev/null 2>>/tmp/ae-
 # the live aerospace.toml rather than copied here, so the two cannot drift; if
 # the pattern can't be found we re-tile everything, which is the state a restart
 # is supposed to produce anyway.
+# Every window id is about to be reassigned by the sweep below, and the Chrome
+# state is keyed on ids: a stale ~/.ae-cwin-* would have the switcher moving
+# whatever window inherited that number. Clearing it costs one cmd+b per
+# workspace to re-summon, which is cheaper and far more legible than trying to
+# re-anchor across an id reassignment.
+rm -f "$HOME"/.ae-ctab-* "$HOME"/.ae-cwin-* 2>/dev/null
+
 float_re=$(sed -n "s/^if\.app-name-regex-substring = '(?i)\(.*\)'[[:space:]]*$/\1/p" \
              "$HOME/.aerospace.toml" 2>/dev/null | head -1)
 while IFS='|' read -r id app; do

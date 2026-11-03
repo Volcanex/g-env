@@ -1,30 +1,62 @@
 #!/usr/bin/env zsh
-# Open a new Chrome window in the workspace's mapped profile, pulled to the current workspace.
-# Profile is read from the instance manifest (workspace.chrome_profile); defaults to "Default".
-ws=$("$HOME"/.local/bin/aerospace list-workspaces --focused 2>/dev/null)
-# Focus usually sits on the terminal, which lives on the twin Nx when a second
-# monitor is attached. Chrome belongs on the plain N (main monitor), and the
-# manifest only knows numeric workspaces, so strip the suffix.
-ws="${ws%x}"
+# cmd+b: give me a Chrome window here, in this workspace's profile.
+#
+# Reuses before it spawns. The old version called the Chrome binary with
+# --new-window on every press and never looked for an existing window, so a day
+# of glancing at things left a dozen windows and no way to navigate them. That
+# is what ballooned, and it was this script, not Chrome.
+#
+# Profile is read from the instance manifest (workspace.chrome_profile) and
+# defaults to "Default".
+#
+# AeroSpace cannot see which Chrome profile a window belongs to, so we learn it
+# at the only moment it is knowable (creation) and remember it in
+# ~/.ae-cwin-<slug>, one "<aerospace-id> <chrome-id>" per line, the Chrome id
+# because `active tab index` is the only way to address a tab and it needs one.
+# Matching on the window
+# title's " - <profile name>" suffix is deliberately *not* done: the suffix
+# vanishes when only one profile is in use, changes on rename, and a page
+# genuinely titled "... - <profile name>" false-matches.
+#
+# Bound from aerospace.toml under exec-and-forget, whose env is minimal.
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
 
+A="$HOME/.local/bin/aerospace"
+
+notify() {
+  osascript -e "display notification \"$2\" with title \"$1\"" >/dev/null 2>&1 || true
+}
+
+ws=$("$A" list-workspaces --focused 2>/dev/null)
+# N and Nx are two halves of one logical workspace: focus usually sits on the
+# terminal, which lives on the twin Nx when a second monitor is attached. Chrome
+# belongs on the plain N, and the manifest only knows numeric workspaces.
+ws="${ws%x}"
+# Anything else would be interpolated into the python below, and ws0 is floating.
+[[ "$ws" =~ '^[0-9]+$' ]] || exit 0
 manifest=$("${0:A:h}/g-instance" manifest 2>/dev/null)
+
 profile=$(python3 -c "
 import json
 try:
   d=json.load(open('$manifest'))
   w=next(w for w in d['workspaces'] if str(w['number'])=='$ws')
   print(w.get('chrome_profile') or 'Default')
-except: print('Default')
+except Exception: print('Default')
 " 2>/dev/null)
 [[ -z "$profile" ]] && profile="Default"
+slug="${${profile:l}// /-}"
+cwin="$HOME/.ae-cwin-$slug"
 
-A="$HOME/.local/bin/aerospace"
-chrome_wins() {
-  "$A" list-windows --all --format '%{window-id}|%{app-name}' 2>/dev/null |
-    awk -F'|' '$2=="Google Chrome" {print $1}' | sort
+# `%{workspace}` is why this can reuse at all: it is the only way to ask which
+# workspace a window is on without focusing it.
+chrome_rows() {
+  "$A" list-windows --all --format '%{window-id}|%{app-name}|%{workspace}' 2>/dev/null |
+    awk -F'|' '$2=="Google Chrome"'
 }
+chrome_ids() { chrome_rows | cut -d'|' -f1 | sort; }
 
-# Hold the switcher's lock for the whole launch. Asking Chrome for a window
+# Hold the switcher's lock for the whole run. Asking Chrome for a window
 # activates Chrome, and macOS raises an existing window of its own choosing
 # first, on whatever workspace that window lives. That is a workspace change,
 # so ae-follow sees an app with nothing here and travels; the window we are
@@ -33,7 +65,126 @@ chrome_wins() {
 echo $$ > /tmp/ae-switch.lock
 trap 'rm -f /tmp/ae-switch.lock' EXIT
 
-before=$(chrome_wins)
+rows=$(chrome_rows)
+live=$(printf '%s\n' "$rows" | cut -d'|' -f1)
+
+# Forget windows closed by hand, so the file cannot grow forever or send us
+# chasing a window that is not there. Matched on the first field only: the
+# second is Chrome's own window id, which AeroSpace knows nothing about.
+if [[ -f "$cwin" ]]; then
+  kept=$(awk 'NR==FNR{live[$1];next} ($1 in live)' \
+    <(printf '%s\n' "$live" | grep -v '^$') "$cwin")
+  printf '%s\n' "$kept" | grep -v '^$' > "$cwin"
+  mine=$(printf '%s\n' "$kept" | awk 'NF{print $1}')
+else
+  mine=""
+fi
+
+claim() {  # $1 = aerospace window id; this workspace's focus is now that window
+  "$A" focus --window-id "$1" 2>/dev/null || "$A" workspace "$ws"
+  # A Chrome window arriving here must not push the terminal off the left edge.
+  ae-pin-term "$ws"
+  printf '%s\n' "$1" > "$HOME/.ae-focus-$ws"
+}
+
+# Windows that predate this cache have an AeroSpace id and no Chrome id, so tab
+# memory would silently never work for them. The pair is normally learned at
+# creation and these were never created by us. Recover it from the title, which
+# is the one thing both sides report: AeroSpace gives
+# "<tab title> - Google Chrome - <account>", Chrome gives the tab title. Only a
+# recovery path, never the primary one. Two windows showing the same page are
+# indistinguishable here, which is exactly why creation-time pairing is what the
+# rest of this script relies on. Costs one Apple event, once per window, ever.
+backfill_cid() {
+  local id="$1" title cid
+  [[ -f "$cwin" ]] || return 0
+  grep -qE "^$id [0-9]" "$cwin" && return 0
+  pgrep -x "Google Chrome" >/dev/null 2>&1 || return 0
+  title=$("$A" list-windows --all --format '%{window-id}|%{window-title}' 2>/dev/null |
+    awk -F'|' -v i="$id" '$1==i {sub(/^[^|]*\|/, ""); print}')
+  [[ -z "$title" ]] && return 0
+  cid=$(osascript - "$title" <<'APPLESCRIPT' 2>/dev/null
+on run argv
+  set want to item 1 of argv
+  with timeout of 2 seconds
+    tell application "Google Chrome"
+      repeat with w in every window
+        set t to title of active tab of w
+        if t is not "" and want starts with t then return (id of w as text)
+      end repeat
+    end tell
+  end timeout
+  return ""
+end run
+APPLESCRIPT
+)
+  [[ -z "$cid" ]] && return 0
+  awk -v i="$id" -v c="$cid" '$1==i {print i, c; next} {print}' "$cwin" > "$cwin.new" &&
+    mv "$cwin.new" "$cwin"
+}
+
+# cmd+b is what enrols a workspace in the summoned set: ae-switch only travels
+# Chrome to workspaces that have an ~/.ae-ctab-<N> file, so a workspace you have
+# never asked for Chrome on never sees a window arrive. Written whether or not
+# harmony is on, so toggling it on works immediately rather than after a lap.
+# ws0 is excluded: it is floating, and ae-switch exits at its workspace-0 branch
+# before any harmony hook runs. Enrolling it would put a workspace in the
+# summoned set that can never be travelled to, a line in `genv chrome` that
+# means nothing.
+[[ "$ws" != "0" && ! -f "$HOME/.ae-ctab-$ws" ]] && printf '1 \n' > "$HOME/.ae-ctab-$ws"
+
+# Already one of ours, already here (or on this workspace's twin): just focus it.
+here=$(printf '%s\n' "$rows" |
+  awk -F'|' -v w="$ws" '$3==w || $3==w"x" {print $1}' | sort -u)
+if [[ -n "$mine" && -n "$here" ]]; then
+  hit=$(comm -12 <(printf '%s\n' "$mine" | sort -u) <(printf '%s\n' "$here") | tail -1)
+  if [[ -n "$hit" ]]; then
+    claim "$hit"
+    backfill_cid "$hit"
+    exit 0
+  fi
+fi
+
+# Second chance, for a double-tap. move-node-to-workspace is asynchronous: a
+# cmd+b within ~100ms of the last one asks AeroSpace where the window is before
+# the table has caught up with the move, sees nothing here, and spawns a twin,
+# which is the exact bug this script exists to fix. ~/.ae-focus-<N> is written
+# by claim() in the same breath as the move, so it is never stale that way.
+if [[ -n "$mine" ]]; then
+  last=$(cat "$HOME/.ae-focus-$ws" 2>/dev/null)
+  if [[ -n "$last" ]] && grep -qx "$last" <<<"$mine"; then
+    claim "$last"
+    backfill_cid "$last"
+    exit 0
+  fi
+fi
+
+# Under harmony there is one window per profile and it travels, so a profile
+# window that exists somewhere else is summoned rather than duplicated. This is
+# the whole point of the toggle: without it cmd+b on a new workspace is still a
+# new window, which is Step 2 behaviour and perfectly fine.
+if [[ -f "$HOME/.genv-chrome-harmony" && -n "$mine" ]]; then
+  elsewhere=$(printf '%s\n' "$mine" | head -1)
+  if [[ -n "$elsewhere" ]]; then
+    "$A" move-node-to-workspace --window-id "$elsewhere" "$ws" 2>/dev/null
+    claim "$elsewhere"
+    backfill_cid "$elsewhere"
+    exit 0
+  fi
+fi
+
+before=$(printf '%s\n' "$live" | grep -v '^$' | sort)
+
+# Chrome-side ids before the spawn, comma-fenced so a substring test cannot
+# match a longer id. Only asked when Chrome is already running: an Apple event
+# to a dead app launches it hidden, which is how duplicate Ghostty instances
+# were once minted (bin/CLAUDE.md).
+chrome_before=","
+if pgrep -x "Google Chrome" >/dev/null 2>&1; then
+  chrome_before=$(osascript -e 'tell application "Google Chrome" to get (id of every window)' 2>/dev/null |
+    tr -d ' ' | sed 's/^/,/; s/$/,/')
+  [[ -z "$chrome_before" ]] && chrome_before=","
+fi
 
 # Direct binary, not `open -na --args`: open drops the args when Chrome is
 # already running, snapping to whatever profile's window exists instead.
@@ -45,17 +196,50 @@ disown
 # Chrome window is focused" was the wrong window whenever macOS had raised an
 # older one during the launch. It moved *that* one here, so a window teleported
 # off another workspace and the new one stayed wherever it was born.
+#
+# Two consecutive identical polls, then the highest id: a session restore
+# publishes several windows a few milliseconds apart, and taking the first one
+# seen means claiming a window that is not the one cmd+b asked for.
 new=""
+prev=""
 for i in {1..30}; do
   sleep 0.1
-  new=$(comm -13 <(printf '%s\n' "$before" | grep -v '^$') <(chrome_wins) | head -1)
-  [[ -n "$new" ]] && break
+  diff=$(comm -13 <(printf '%s\n' "$before") <(chrome_ids))
+  [[ -z "$diff" ]] && { prev=""; continue; }
+  if [[ "$diff" == "$prev" ]]; then
+    new=$(printf '%s\n' "$diff" | sort -n | tail -1)
+    break
+  fi
+  prev="$diff"
 done
 
-if [[ -n "$new" ]]; then
-  "$A" move-node-to-workspace --window-id "$new" "$ws" 2>/dev/null
-  # Focusing it is also the switch back, if an activation dragged us off.
-  "$A" focus --window-id "$new" 2>/dev/null || "$A" workspace "$ws"
-  # Leave it as this workspace's focus memory: it is what you asked for.
-  printf '%s\n' "$new" > "$HOME/.ae-focus-$ws"
+if [[ -z "$new" ]]; then
+  notify "chrome" "no new window appeared for $profile"
+  exit 1
 fi
+
+"$A" move-node-to-workspace --window-id "$new" "$ws" 2>/dev/null
+# Focusing it is also the switch back, if an activation dragged us off. Leaving
+# it as this workspace's focus memory is what you asked for.
+claim "$new"
+
+# Chrome's own window id, learned the same way and at the same moment as the
+# AeroSpace one: by diffing. It cannot be recovered later (AeroSpace does not
+# expose it and Chrome does not expose AeroSpace's) and `active tab index` in
+# ae-switch has no other way to address this window. Chrome is alive by
+# construction here, so the Apple event cannot launch a hidden instance.
+cid=$(osascript - "$chrome_before" <<'APPLESCRIPT' 2>/dev/null
+on run argv
+  set known to item 1 of argv
+  with timeout of 2 seconds
+    tell application "Google Chrome"
+      repeat with w in every window
+        if known does not contain ("," & (id of w as text) & ",") then return (id of w as text)
+      end repeat
+    end tell
+  end timeout
+  return ""
+end run
+APPLESCRIPT
+)
+printf '%s %s\n' "$new" "$cid" >> "$cwin"
