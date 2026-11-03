@@ -10,6 +10,13 @@
   </array>
   <key>RunAtLoad</key>
   <true/>
+  <!-- Without this AeroSpace dies and stays dead: it has crashed repeatedly
+       (crash reports 9 and 15 Sep 2026, a clean-looking exit on the 16th) and
+       every cmd+N after that is a no-op with no error anywhere. `genv down`
+       boots the job out entirely before pkill (cli/env.py), so launchd is not
+       holding a restart against us. -->
+  <key>KeepAlive</key>
+  <true/>
   <key>StandardOutPath</key>
   <string>/tmp/aerospace.log</string>
   <key>StandardErrorPath</key>
