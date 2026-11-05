@@ -16,8 +16,8 @@ is unfenced. Never raw write_note/edit_note. Keep actor provenance honest.
 
 Push committed work to GitHub without asking, feature branches included; gsync also
 pushes left-behind main commits every 30 min. Never force-push or rewrite pushed
-history. Internal services: speed over safety. Merge, restart, deploy after own review,
-check health, roll back on failure. Client sites need the operator.
+history. Internal services: speed over safety. Merge, restart, deploy after review,
+check health, roll back if it fails. Client sites need the operator.
 
 ## Research and verification
 
