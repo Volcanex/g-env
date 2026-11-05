@@ -15,9 +15,9 @@ supersede and edit_major need the operator's assent, then assent=True. mark_brok
 is unfenced. Never raw write_note/edit_note. Keep actor provenance honest.
 
 Push committed work to GitHub without asking, feature branches included; gsync also
-pushes left-behind main commits every 30 minutes. Never force-push or rewrite pushed
-history. Internal services: speed over safety. Merge, restart and deploy after your own
-review, check health, roll back on failure. Client sites still need the operator.
+pushes left-behind main commits every 30 min. Never force-push or rewrite pushed
+history. Internal services: speed over safety. Merge, restart, deploy after own review,
+check health, roll back on failure. Client sites need the operator.
 
 ## Research and verification
 
