@@ -16,7 +16,8 @@ is unfenced. Never raw write_note/edit_note. Keep actor provenance honest.
 
 Push committed work to GitHub without asking, feature branches included; gsync also
 pushes left-behind main commits every 30 minutes. Never force-push or rewrite pushed
-history. Deploys, restarts and merges into a checkout that runs still need the operator.
+history. Internal services: speed over safety. Merge, restart and deploy after your own
+review, check health, roll back on failure. Client sites still need the operator.
 
 ## Research and verification
 
