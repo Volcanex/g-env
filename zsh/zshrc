@@ -210,6 +210,7 @@ except: print('')
     [[ -z "$_ae_ws_session" ]] && _ae_ws_session="ws${_ae_ws}-overflow-$$"
     _cwd_args=()
     [[ -n "$_start_path" ]] && _cwd_args=(-c "$_start_path")
+    printf '\e]111\a'
     echo "── local session ${_ae_ws_session} ──"
     tmux new-session -As "$_ae_ws_session" "${_cwd_args[@]}"
     echo "── detached from ${_ae_ws_session} ──"
