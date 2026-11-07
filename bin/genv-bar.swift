@@ -196,6 +196,24 @@ final class Bar: NSObject, NSMenuDelegate {
                 + "laptop immediately, and that is where it lands on the next connect"
             : "Needs the iPad connected"
 
+        // Sidecar resolution. Each pixel is H.264-encoded every frame it changes,
+        // so smaller sizes cost less CPU; the ticked one is current.
+        let resItem = NSMenuItem(title: "ipad resolution", action: nil, keyEquivalent: "")
+        let resSub = NSMenu()
+        if let pad = sidecarDisplay() {
+            let current = CGDisplayCopyDisplayMode(pad)
+            for mode in sidecarModes(pad) {
+                let entry = add(resSub, "\(mode.width) × \(mode.height)\(mode.pixelWidth > mode.width ? "  (sharp)" : "")",
+                                action: #selector(setPadMode(_:)), enabled: true)
+                entry.state = (mode.width == current?.width && mode.height == current?.height) ? .on : .off
+                entry.representedObject = mode
+            }
+        } else {
+            addDetail(resSub, "iPad not connected", false)
+        }
+        resItem.submenu = resSub
+        menu.addItem(resItem)
+
         let tiling = add(menu, "tiling \(state.tiling == "on" ? "off" : "on")",
                          action: #selector(toggleTiling), enabled: state.wmUp)
         tiling.toolTip = "Tiling is \(state.tiling) now. Off: windows float like normal "
@@ -287,6 +305,36 @@ final class Bar: NSObject, NSMenuDelegate {
         guard let app = sender.representedObject as? String else { return }
         genvRun(["sticky", state.sticky.contains(app) ? "remove" : "add", app])
         refreshTitle()
+    }
+
+    func sidecarDisplay() -> CGDirectDisplayID? {
+        for screen in NSScreen.screens where screen.localizedName.localizedCaseInsensitiveContains("sidecar") {
+            if let n = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
+                return CGDirectDisplayID(n.uint32Value)
+            }
+        }
+        return nil
+    }
+
+    func sidecarModes(_ display: CGDirectDisplayID) -> [CGDisplayMode] {
+        let opts = [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary
+        let all = (CGDisplayCopyAllDisplayModes(display, opts) as? [CGDisplayMode]) ?? []
+        var best: [String: CGDisplayMode] = [:]
+        for m in all where m.isUsableForDesktopGUI() {
+            let key = "\(m.width)x\(m.height)"
+            if let have = best[key], have.pixelWidth >= m.pixelWidth { continue }
+            best[key] = m
+        }
+        return best.values.sorted { $0.width > $1.width }
+    }
+
+    @objc func setPadMode(_ sender: NSMenuItem) {
+        guard let obj = sender.representedObject, let pad = sidecarDisplay() else { return }
+        let mode = obj as! CGDisplayMode
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success else { return }
+        CGConfigureDisplayWithDisplayMode(config, pad, mode, nil)
+        CGCompleteDisplayConfiguration(config, .permanently)
     }
 
     @objc func quit() {
