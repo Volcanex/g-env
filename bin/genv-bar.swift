@@ -205,7 +205,7 @@ final class Bar: NSObject, NSMenuDelegate {
             for mode in sidecarModes(pad) {
                 let entry = add(resSub, "\(mode.width) × \(mode.height)\(mode.pixelWidth > mode.width ? "  (sharp)" : "")",
                                 action: #selector(setPadMode(_:)), enabled: true)
-                entry.state = (mode.width == current?.width && mode.height == current?.height) ? .on : .off
+                entry.state = (mode.width == current?.width && mode.pixelWidth == current?.pixelWidth) ? .on : .off
                 entry.representedObject = mode
             }
         } else {
@@ -319,13 +319,11 @@ final class Bar: NSObject, NSMenuDelegate {
     func sidecarModes(_ display: CGDirectDisplayID) -> [CGDisplayMode] {
         let opts = [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary
         let all = (CGDisplayCopyAllDisplayModes(display, opts) as? [CGDisplayMode]) ?? []
-        var best: [String: CGDisplayMode] = [:]
-        for m in all where m.isUsableForDesktopGUI() {
-            let key = "\(m.width)x\(m.height)"
-            if let have = best[key], have.pixelWidth >= m.pixelWidth { continue }
-            best[key] = m
+        var seen = Set<String>()
+        let modes = all.filter { m in
+            m.width >= 790 && seen.insert("\(m.width)x\(m.pixelWidth)").inserted
         }
-        return best.values.sorted { $0.width > $1.width }
+        return modes.sorted { ($0.width, $0.pixelWidth) > ($1.width, $1.pixelWidth) }
     }
 
     @objc func setPadMode(_ sender: NSMenuItem) {
