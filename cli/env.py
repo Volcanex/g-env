@@ -496,6 +496,25 @@ def render():
     console.print(f"[label]chrome[/label]     [text]{harmony_state()}[/text]\n")
 
 
+def status_json():
+    """The same facts render() shows, as JSON, for the G Command Mac app and
+    genv-bar. Keys are stable: add, never rename."""
+    import json
+    devices = sidecar_devices()
+    print(json.dumps({
+        "processes": collect(),
+        "sidecar": {
+            "connected": next((n for n, on in devices if on), None),
+            "devices": [{"name": n, "connected": on} for n, on in devices],
+        },
+        "monitors": monitors(),
+        "tiling": tiling_state(),
+        "term_home": term_home(),
+        "ipad_side": ipad_side(),
+        "chrome": harmony_state(),
+    }))
+
+
 def up():
     for name in AGENTS:
         console.print(f"[faint]{name} →[/faint] [hot]{'up' if start(name) else 'failed'}[/hot]")
@@ -596,7 +615,7 @@ VERBS = {
     "ws": workspace.ws,
     "up": lambda rest: (up(), 0)[1],
     "down": lambda rest: (down(), 0)[1],
-    "status": lambda rest: (render(), 0)[1],
+    "status": lambda rest: (status_json() if rest[:1] == ["--json"] else render(), 0)[1],
     "ipad": ipad,
     "term": term,
     "tiling": tiling,
