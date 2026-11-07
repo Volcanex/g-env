@@ -377,10 +377,23 @@ settle() {
   return 0
 }
 
+# Travellers (WhatsApp, G Command/Studio) follow you: full size, floating, never
+# tiled, moved onto this workspace under the held cover so they are simply there
+# wherever you go. Floating windows keep their own frame across the move, and
+# the tiles lay out underneath as if they were absent. The float rule for them
+# is in aerospace.toml.
+carry_travellers() {
+  local id
+  while read -r id; do
+    [[ -n "$id" ]] && aerospace move-node-to-workspace --window-id "$id" "$ws" 2>/dev/null
+  done < <(awk -v w="$ws" '$2!=w && /WhatsApp|G Command|G Studio/ {print $1}' <<<"$ALL_WINS")
+}
+
 # Workspace 0: freeform, no terminal tab.
 if [[ "$ws" == "0" ]]; then
   flip_twin
   aerospace workspace 0 >/dev/null 2>&1
+  carry_travellers
   # Only restore focus to a window still ON workspace 0. Focusing one that has
   # since moved drags us to wherever it went. A stale id here (typically a
   # Ghostty tab window, which ae-startup sweeps onto workspace 1) made cmd+0
@@ -635,13 +648,15 @@ while read -r id id_ws id_layout; do
   fi
 done <<<"$WIN_MAP"
 
-# The terminal sits at the left edge of a workspace it shares with other
-# windows, so it is always in the same place. Only on main: on the twin it is
+carry_travellers
+
+# The terminal sits at the right edge of a workspace it shares with other
+# windows, the side the iPad is on, so it is always in the same place. Only on main: on the twin it is
 # alone. Under the held cover, so the shuffle is never seen; once it is already
-# leftmost this costs the one move that fails.
+# rightmost this costs the one move that fails.
 if [[ -n "$win_id" && "$term_ws" == "$ws" ]]; then
   for _ in 1 2 3 4 5 6; do
-    aerospace move --window-id "$win_id" --boundaries workspace --boundaries-action fail left >/dev/null 2>&1 || break
+    aerospace move --window-id "$win_id" --boundaries workspace --boundaries-action fail right >/dev/null 2>&1 || break
   done
 fi
 

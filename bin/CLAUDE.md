@@ -607,3 +607,10 @@ prints instead; `--local` skips SSH; `--pace FILE|-` supplies week starts.
 and compute-mode.json from `/api/compute/sync` with the read-only token in
 `~/.config/genv/compute-token`, replacing the old scp push from h. Overrides set on
 the compute page therefore reach b's sessions within 15 minutes.
+
+**Travellers follow you.** WhatsApp and G Command (and G Studio) float at their
+own size and are moved onto whichever workspace `ae-switch` lands on, under the
+held cover, so they read as sticky without a fork patch. Tiles ignore them. The
+terminal pins to the *right* of the tiles (`ae-switch`, `ae-pin-term`), the side
+the iPad sits on. A reserved left column was tried and dropped: WhatsApp's
+minimum is 970x600 and G Command's 720x480, so neither fits a strip.

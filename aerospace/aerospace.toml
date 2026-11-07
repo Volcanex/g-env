@@ -208,9 +208,10 @@ run = 'layout floating'
 # `if.app-name-regex-substring` line wins) to know which windows to leave
 # floating when it re-tiles the session. Keep it the first such rule.
 [[on-window-detected]]
-if.app-name-regex-substring = '(?i)(System Settings|Preview|iPhone Mirroring|Calculator|Activity Monitor|Spotify|Notes|Messages|Reminders|Calendar)'
+if.app-name-regex-substring = '(?i)(System Settings|Preview|iPhone Mirroring|Calculator|Activity Monitor|Spotify|Notes|Messages|Reminders|Calendar|WhatsApp|G Command|G Studio)'
 check-further-callbacks = true
 run = 'layout floating'
+
 
 # ── The terminal is the one thing that belongs on the second screen ──────────
 # ae-switch creates each workspace's Ghostty tab *on* the twin (that's what
