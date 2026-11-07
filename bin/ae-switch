@@ -377,6 +377,30 @@ settle() {
   return 0
 }
 
+# Travellers: G Command and WhatsApp follow every switch like the terminal does,
+# tiled, leftmost in that order. Closing the window (cmd+w) leaves the app
+# running with nothing to carry, so they drop out of every workspace until
+# reopened, and a reopened window is born on the workspace you are on. Moved
+# under the held cover from the snapshot already taken. Not onto 0 (freeform).
+carry_travellers() {
+  local id app moved=""
+  for app in "G Command" "WhatsApp"; do
+    id=$(awk -v a="$app" 'index($0, a) {print $1; exit}' <<<"$ALL_WINS")
+    [[ -n "$id" ]] || continue
+    if ! awk -v id="$id" -v w="$ws" '$1==id && $2==w {f=1} END{exit !f}' <<<"$ALL_WINS"; then
+      aerospace move-node-to-workspace --window-id "$id" "$ws" 2>/dev/null
+    fi
+    awk -v id="$id" '$1==id && $NF=="floating" {f=1} END{exit !f}' <<<"$ALL_WINS" \
+      && aerospace layout tiling --window-id "$id" 2>/dev/null
+    # Leftmost, then back off one slot per traveller already placed.
+    for _ in 1 2 3 4 5 6 7 8; do
+      aerospace move --window-id "$id" --boundaries workspace --boundaries-action fail left >/dev/null 2>&1 || break
+    done
+    [[ -n "$moved" ]] && aerospace move --window-id "$id" --boundaries workspace --boundaries-action fail right >/dev/null 2>&1
+    moved=1
+  done
+}
+
 # Workspace 0: freeform, no terminal tab.
 if [[ "$ws" == "0" ]]; then
   flip_twin
@@ -634,6 +658,8 @@ while read -r id id_ws id_layout; do
     [[ "$id_ws" != "1" ]] && aerospace move-node-to-workspace --window-id "$id" 1 2>/dev/null
   fi
 done <<<"$WIN_MAP"
+
+carry_travellers
 
 # The terminal sits at the right edge of a workspace it shares with other
 # windows, the side the iPad is on, so it is always in the same place. Only on main: on the twin it is

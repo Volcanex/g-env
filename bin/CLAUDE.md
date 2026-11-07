@@ -608,8 +608,11 @@ and compute-mode.json from `/api/compute/sync` with the read-only token in
 `~/.config/genv/compute-token`, replacing the old scp push from h. Overrides set on
 the compute page therefore reach b's sessions within 15 minutes.
 
-**The terminal pins right.** It sits at the right of the tiles (`ae-switch`,
-`ae-pin-term`), the side the iPad is on. Carrying WhatsApp and G Command onto
-every workspace as floating windows was tried on 2026-11-07 and reverted: at
-their minimum sizes (970x600, 720x480) they cover the tiles, and a reserved
-strip cannot hold them.
+**Travellers tile everywhere, the terminal pins right.** While their windows are
+open, G Command and WhatsApp follow every switch like the terminal tab: `ae-switch`
+moves them onto the new workspace and tiles them leftmost, G Command first. cmd+w
+closes the window but leaves the app running, so it drops out of every workspace,
+and a reopened window is born where you are. The terminal sits at the right of the
+tiles (`ae-switch`, `ae-pin-term`), the side the iPad is on. Floating them on top
+(tried 2026-11-07) covered the tiles. `aerospace list-windows` order is not tile
+order, so read positions from the windows' frames when checking it.
