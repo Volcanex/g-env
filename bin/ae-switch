@@ -383,22 +383,36 @@ settle() {
 # reopened, and a reopened window is born on the workspace you are on. Moved
 # under the held cover from the snapshot already taken. Not onto 0 (freeform).
 carry_travellers() {
-  local id app moved=""
-  for app in "G Command" "WhatsApp"; do
-    id=$(awk -v a="$app" 'index($0, a) {print $1; exit}' <<<"$ALL_WINS")
+  local id app placed=0 i
+  # ~/.genv-sticky lists the sticky apps, one per line, leftmost first; `genv
+  # sticky` and the G Command panel edit it. Absent = the default trio.
+  local apps
+  if [[ -f "$HOME/.genv-sticky" ]]; then
+    apps=$(grep -v '^[[:space:]]*$' "$HOME/.genv-sticky")
+  else
+    apps=$'G Command\nWhatsApp\nClaude'
+  fi
+  while IFS= read -r app; do
+    [[ -n "$app" ]] || continue
+    # Field 3 onward up to the layout is the app name; match it exactly, so
+    # "Claude" never catches another app with Claude in its name. WhatsApp's
+    # name carries a leading U+200E, hence stripping it before comparing.
+    id=$(awk -v a="$app" -v l=$'\xe2\x80\x8e' '{n=$3; for(i=4;i<NF;i++) n=n" "$i; gsub(l,"",n)} n==a {print $1; exit}' <<<"$ALL_WINS")
     [[ -n "$id" ]] || continue
     if ! awk -v id="$id" -v w="$ws" '$1==id && $2==w {f=1} END{exit !f}' <<<"$ALL_WINS"; then
       aerospace move-node-to-workspace --window-id "$id" "$ws" 2>/dev/null
     fi
     awk -v id="$id" '$1==id && $NF=="floating" {f=1} END{exit !f}' <<<"$ALL_WINS" \
       && aerospace layout tiling --window-id "$id" 2>/dev/null
-    # Leftmost, then back off one slot per traveller already placed.
+    # Leftmost, then step right past every sticky window already placed.
     for _ in 1 2 3 4 5 6 7 8; do
       aerospace move --window-id "$id" --boundaries workspace --boundaries-action fail left >/dev/null 2>&1 || break
     done
-    [[ -n "$moved" ]] && aerospace move --window-id "$id" --boundaries workspace --boundaries-action fail right >/dev/null 2>&1
-    moved=1
-  done
+    for ((i = 0; i < placed; i++)); do
+      aerospace move --window-id "$id" --boundaries workspace --boundaries-action fail right >/dev/null 2>&1
+    done
+    placed=$((placed + 1))
+  done <<<"$apps"
 }
 
 # Workspace 0: freeform, no terminal tab.

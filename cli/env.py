@@ -496,6 +496,65 @@ def render():
     console.print(f"[label]chrome[/label]     [text]{harmony_state()}[/text]\n")
 
 
+STICKY_FILE = Path.home() / ".genv-sticky"
+STICKY_DEFAULT = ["G Command", "WhatsApp", "Claude"]
+
+
+def sticky():
+    """Apps whose windows follow every workspace switch, leftmost first.
+    ae-switch reads the same file; absent means the default."""
+    try:
+        apps = [l.strip() for l in STICKY_FILE.read_text().splitlines() if l.strip()]
+    except OSError:
+        return list(STICKY_DEFAULT)
+    return apps
+
+
+def set_sticky(apps):
+    STICKY_FILE.write_text("".join(a + "\n" for a in apps))
+    return apps
+
+
+def running_apps():
+    """Apps with at least one window, as AeroSpace names them (U+200E stripped)."""
+    try:
+        out = subprocess.run(
+            ["aerospace", "list-windows", "--all", "--format", "%{app-name}"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return sorted({l.replace("\u200e", "").strip() for l in out.splitlines() if l.strip()})
+
+
+def sticky_cmd(rest):
+    apps = sticky()
+    if not rest:
+        for i, a in enumerate(apps, 1):
+            console.print(f"[accent]{i}[/accent] [text]{a}[/text]")
+        return 0
+    verb, name = rest[0], " ".join(rest[1:]).strip()
+    if verb == "add" and name:
+        if name not in apps:
+            apps.append(name)
+    elif verb == "remove" and name:
+        apps = [a for a in apps if a != name]
+    elif verb == "left" and name in apps:
+        i = apps.index(name)
+        if i:
+            apps[i - 1], apps[i] = apps[i], apps[i - 1]
+    elif verb == "right" and name in apps:
+        i = apps.index(name)
+        if i < len(apps) - 1:
+            apps[i + 1], apps[i] = apps[i], apps[i + 1]
+    else:
+        console.print("[faint]usage: genv sticky \\[add|remove|left|right <app>][/faint]")
+        return 1
+    set_sticky(apps)
+    console.print(f"[faint]sticky →[/faint] [hot]{', '.join(apps) or 'none'}[/hot] [faint](next switch)[/faint]")
+    return 0
+
+
 def status_json():
     """The same facts render() shows, as JSON, for the G Command Mac app and
     genv-bar. Keys are stable: add, never rename."""
@@ -512,6 +571,8 @@ def status_json():
         "term_home": term_home(),
         "ipad_side": ipad_side(),
         "chrome": harmony_state(),
+        "sticky": sticky(),
+        "running_apps": running_apps(),
     }))
 
 
@@ -621,6 +682,7 @@ VERBS = {
     "tiling": tiling,
     "fade": fade,
     "chrome": chrome,
+    "sticky": sticky_cmd,
 }
 
 

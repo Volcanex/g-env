@@ -608,7 +608,9 @@ and compute-mode.json from `/api/compute/sync` with the read-only token in
 `~/.config/genv/compute-token`, replacing the old scp push from h. Overrides set on
 the compute page therefore reach b's sessions within 15 minutes.
 
-**Travellers tile everywhere, the terminal pins right.** While their windows are
+**Sticky apps tile everywhere, the terminal pins right.** `~/.genv-sticky` (one app
+per line, leftmost first; `genv sticky add|remove|left|right <app>`; absent = G
+Command, WhatsApp, Claude) names them. While their windows are
 open, G Command and WhatsApp follow every switch like the terminal tab: `ae-switch`
 moves them onto the new workspace and tiles them leftmost, G Command first. cmd+w
 closes the window but leaves the app running, so it drops out of every workspace,
