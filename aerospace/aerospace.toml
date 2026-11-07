@@ -208,7 +208,7 @@ run = 'layout floating'
 # `if.app-name-regex-substring` line wins) to know which windows to leave
 # floating when it re-tiles the session. Keep it the first such rule.
 [[on-window-detected]]
-if.app-name-regex-substring = '(?i)(System Settings|Preview|iPhone Mirroring|Calculator|Activity Monitor|Spotify|Notes|Messages|Reminders|Calendar|WhatsApp|G Command|G Studio)'
+if.app-name-regex-substring = '(?i)(System Settings|Preview|iPhone Mirroring|Calculator|Activity Monitor|Spotify|Notes|Messages|Reminders|Calendar)'
 check-further-callbacks = true
 run = 'layout floating'
 
