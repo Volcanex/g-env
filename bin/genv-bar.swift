@@ -53,6 +53,8 @@ struct State {
     var termHome = "secondary"
     var ipadSide = "right"
     var tiling = "on"
+    var sticky: [String] = []
+    var running: [String] = []
 
     var connectedPad: String? { sidecar.first { $0.connected }?.name }
 
@@ -69,6 +71,11 @@ struct State {
         s.termHome = genvRun(["term"]) == "main" ? "main" : "secondary"
         s.ipadSide = genvRun(["ipad", "side"]) == "left" ? "left" : "right"
         s.tiling = genvRun(["tiling"]) == "off" ? "off" : "on"
+        if let data = genvRun(["status", "--json"]).data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            s.sticky = json["sticky"] as? [String] ?? []
+            s.running = json["running_apps"] as? [String] ?? []
+        }
         for line in shell(
             FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".local/bin/ae-sidecar").path, ["list"]
@@ -108,16 +115,25 @@ final class Bar: NSObject, NSMenuDelegate {
     /// without having to identify which icon it is.
     func refreshTitle() {
         state = State.read()
-        let name = state.wmUp ? "rectangle.3.group.fill" : "rectangle.3.group"
-        if let image = NSImage(systemSymbolName: name, accessibilityDescription: "genv") {
+        // The g mark, shared with G Command (which no longer has a status item
+        // of its own: this is the one G in the menu bar). A template image so it
+        // follows the menu bar's colour. Dimmed while the window manager is down.
+        let dir = URL(fileURLWithPath: genv).resolvingSymlinksInPath().deletingLastPathComponent()
+        if let image = NSImage(contentsOf: dir.appendingPathComponent("genv-bar-iconTemplate@2x.png")) {
+            image.size = NSSize(width: 16, height: 16)
+            image.isTemplate = true
+            item.button?.image = image
+            item.button?.title = ""
+        } else if let image = NSImage(systemSymbolName: state.wmUp ? "rectangle.3.group.fill" : "rectangle.3.group",
+                                      accessibilityDescription: "genv") {
             image.isTemplate = true
             item.button?.image = image
             item.button?.title = ""
         } else {
-            // Older macOS without the symbol: never leave the item blank.
             item.button?.image = nil
             item.button?.title = state.wmUp ? "◼" : "◻"
         }
+        item.button?.appearsDisabled = !state.wmUp
         var bits = [state.wmUp ? "genv: up" : "genv: down"]
         if let pad = state.connectedPad { bits.append("iPad: \(pad)") }
         if state.tiling == "off" { bits.append("tiling off") }
@@ -185,6 +201,24 @@ final class Bar: NSObject, NSMenuDelegate {
         tiling.toolTip = "Tiling is \(state.tiling) now. Off: windows float like normal "
             + "macOS. Workspaces, ⌘N and the terminal's screen keep working."
 
+        // Sticky apps follow every workspace switch, leftmost first (genv sticky).
+        // A ticked app follows you; clicking flips it. Open apps not yet sticky
+        // are listed unticked, so making one sticky is a single click.
+        let stickyItem = NSMenuItem(title: "sticky apps", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        let others = state.running.filter { !state.sticky.contains($0) && $0 != "Ghostty" && $0 != "Electron" }
+        for app in state.sticky + others {
+            let on = state.sticky.contains(app)
+            let entry = add(sub, app, action: #selector(toggleSticky(_:)), enabled: true)
+            entry.state = on ? .on : .off
+            entry.representedObject = app
+            entry.toolTip = on ? "Follows you onto every workspace. Click to stop"
+                               : "Stays on its own workspace. Click to make it follow you"
+        }
+        if sub.items.isEmpty { addDetail(sub, "no apps open", false) }
+        stickyItem.submenu = sub
+        menu.addItem(stickyItem)
+
         menu.addItem(.separator())
         add(menu, "Quit genv-bar", action: #selector(quit), enabled: true)
     }
@@ -247,6 +281,12 @@ final class Bar: NSObject, NSMenuDelegate {
             genvRun(["tiling", "toggle"])
             DispatchQueue.main.async { self.refreshTitle() }
         }
+    }
+
+    @objc func toggleSticky(_ sender: NSMenuItem) {
+        guard let app = sender.representedObject as? String else { return }
+        genvRun(["sticky", state.sticky.contains(app) ? "remove" : "add", app])
+        refreshTitle()
     }
 
     @objc func quit() {

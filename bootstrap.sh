@@ -105,7 +105,10 @@ fi
 # trouble that makes bundled login items unreliable here. Its agent is installed
 # further down, after AeroSpace, so the menu comes up over a live environment.
 if command -v swiftc &>/dev/null && [[ "$REPO/bin/genv-bar.swift" -nt "$HOME/.local/bin/genv-bar" ]]; then
-  swiftc -O "$REPO/bin/genv-bar.swift" -o "$HOME/.local/bin/genv-bar"
+  # Build beside it and rename over: overwriting a running binary in place
+  # keeps its inode, and launchd then kills it with OS_REASON_CODESIGNING.
+  swiftc -O "$REPO/bin/genv-bar.swift" -o "$HOME/.local/bin/genv-bar.new" \
+    && mv -f "$HOME/.local/bin/genv-bar.new" "$HOME/.local/bin/genv-bar"
 fi
 
 # AeroSpace fork: hides workspaces by occlusion instead of parking their
