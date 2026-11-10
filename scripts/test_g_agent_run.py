@@ -357,6 +357,26 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(config['roles']['review'], ['claude:opus', 'codex:gpt-6.1-sol'])
         self.assertEqual((config['effort']['review'], config['tools']['review']), ('medium', True))
 
+    def codex_final(self, final, items):
+        _argv, _prompt, parse = runner.codex('m', 'low', False, 'read-only', self.work, 'p', 10)
+        Path(self.work).mkdir(parents=True, exist_ok=True)
+        (Path(self.work) / ".g-agent-last.txt").write_text(final)
+        stream = [{'type': 'item.completed', 'item': {'type': kind, key: said}} for kind, key, said in items]
+        return parse('\n'.join(json.dumps(e) for e in stream), None)[0]
+
+    def test_codex_report_printed_before_a_short_final_message_is_kept(self):
+        rows = 'row\tfact\n' * 900
+        printed = self.codex_final('Printed the three-part report to stdout: 1,147 rows.',
+                                   [('command_execution', 'aggregated_output', rows)])
+        self.assertIn(rows.strip(), printed)
+        earlier = self.codex_final('The report is in my previous message.', [('agent_message', 'text', rows)])
+        self.assertIn(rows.strip(), earlier)
+
+    def test_codex_short_answer_after_reading_a_big_file_stays_short(self):
+        answer = 'The function is defined at bin/g-agent-run:142.'
+        self.assertEqual(self.codex_final(answer, [('command_execution', 'aggregated_output', 'x' * 50000),
+                                                   ('agent_message', 'text', 'Reading the runner.')]), answer)
+
     def test_unknown_role_is_a_usage_error(self):
         with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
             self.assertEqual(runner.main(['--role', 'nope', '--prompt-file', str(self.tmp / 'prompt.txt'), '--workdir', str(self.work)]), 2)

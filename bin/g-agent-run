@@ -141,17 +141,31 @@ def codex(model, effort, web, sandbox, workdir, prompt, timeout, tools=False, co
 
     def parse(out, _file):
         usage = {}
+        earlier = {'agent_message': '', 'command_execution': ''}
         for line in out.splitlines():
             try:
                 event = json.loads(line)
             except ValueError:
                 continue
+            item = event.get('item') or {}
+            if event.get('type') == 'item.completed' and item.get('type') in ('agent_message', 'command_execution'):
+                said = item.get('text') or item.get('aggregated_output') or ''
+                if len(said) > len(earlier[item['type']]):
+                    earlier[item['type']] = said
             if event.get('type') == 'turn.completed':
                 u = event.get('usage') or {}
                 usage = {'input': usage.get('input', 0) + u.get('input_tokens', 0),
                          'output': usage.get('output', 0) + u.get('output_tokens', 0) + u.get('reasoning_output_tokens', 0)}
         text = outfile.read_text().strip() if outfile.exists() else ''
         outfile.unlink(missing_ok=True)  # the workdir may be a real directory (brain/.pulse), not scratch
+        # Only the last message is kept. A worker that prints a long report with a shell command or in
+        # an earlier message and then ends on "printed above" would lose it (2026-11-10: 1,147 rows).
+        # Shell output is taken only when the last message says it printed something: most jobs read big files.
+        lost = earlier['agent_message']
+        if re.search(r'\b(printed|stdout|above)\b', text, re.I) and len(earlier['command_execution']) > len(lost):
+            lost = earlier['command_execution']
+        if len(text) < 2000 and len(lost) > max(4000, 10 * len(text)):
+            text += '\n\n[g-agent-run: the final message was short, so the longest earlier output follows]\n\n' + lost.strip()
         return text, usage
     return argv, prompt, parse
 
