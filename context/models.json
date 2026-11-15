@@ -85,13 +85,15 @@
    "access": "claude-sub",
    "released": "2026-10-07",
    "scores": {
-    "AA": 36
+    "AA": 36,
+    "TB4": 32.8
    },
    "cost": "$0.10/$0.50 API for prompts up to 100k tokens, $0.50/$2.50 above",
    "role": "cheap Claude worker",
    "note": "xhigh 35 at $.25; max 36 but ~3min first token",
    "sources": {
     "AA": "https://artificialanalysis.ai/models/comparisons/claude-haiku-5-5-vs-gpt-6-luna",
+    "TB4": "https://artificialanalysis.ai/models/comparisons/claude-haiku-5-5-vs-gpt-6-1-sol",
     "cost": "https://platform.claude.com/docs/en/about-claude/pricing",
     "released": "https://platform.claude.com/docs/en/models/haiku-5-5/overview",
     "note": "https://artificialanalysis.ai/models/comparisons/claude-haiku-5-5-vs-gpt-6-luna"
@@ -165,12 +167,14 @@
    "access": "claude-sub",
    "released": "2026-11-09",
    "scores": {
-    "AA": 65
+    "AA": 65,
+    "TB4": 59.6
    },
    "cost": "$8 / MTok input, $40 / MTok output",
    "role": "new, unassessed",
    "sources": {
     "AA": "https://artificialanalysis.ai/models/comparisons/claude-fable-5-2-vs-claude-opus-5-5",
+    "TB4": "https://artificialanalysis.ai/models/comparisons/claude-fable-5-2-vs-claude-opus-5-5",
     "cost": "https://platform.claude.com/docs/en/models/fable-5-2/overview",
     "released": "https://platform.claude.com/docs/en/models/fable-5-2/overview"
    }
@@ -195,12 +199,14 @@
    "access": "api",
    "released": "2026-10-26",
    "scores": {
-    "AA": 51
+    "AA": 51,
+    "TB4": 55.6
    },
    "cost": "$1 / MTok input, $5 / MTok output",
    "role": "new, unassessed",
    "sources": {
     "AA": "https://artificialanalysis.ai/leaderboards/models",
+    "TB4": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-terra-vs-gpt-6-1-sol",
     "cost": "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
     "released": "https://developers.openai.com/api/docs/changelog"
    }
@@ -377,6 +383,60 @@
  "quota_note": "Quota weighting per model is unpublished, so $ is an API-price proxy only. Choose by balance of intelligence, speed (AA TTFT incl. thinking) and cost, never cost alone.",
  "codex_ladder": [
   {
+   "model": "gpt-6-luna",
+   "effort": "low",
+   "score": 10,
+   "cost_usd": 0.01,
+   "ttft_s": 3,
+   "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
+   "source": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-vs-gpt-6-luna"
+  },
+  {
+   "model": "gpt-6-luna",
+   "effort": "medium",
+   "score": 18,
+   "cost_usd": 0.04,
+   "ttft_s": 7,
+   "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
+   "source": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-vs-gpt-6-luna"
+  },
+  {
+   "model": "gpt-6-luna",
+   "effort": "none",
+   "score": 9,
+   "cost_usd": 0.07,
+   "ttft_s": 2,
+   "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
+   "source": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-vs-gpt-6-luna"
+  },
+  {
+   "model": "gpt-6-luna",
+   "effort": "high",
+   "score": 21,
+   "cost_usd": 0.07,
+   "ttft_s": 13,
+   "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
+   "source": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-vs-gpt-6-luna"
+  },
+  {
+   "model": "gpt-6-luna",
+   "effort": "xhigh",
+   "score": 23,
+   "cost_usd": 0.1,
+   "ttft_s": 21,
+   "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
+   "source": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-vs-gpt-6-luna"
+  },
+  {
+   "model": "gpt-6-luna",
+   "effort": "max",
+   "score": 28,
+   "cost_usd": 0.15,
+   "ttft_s": 84,
+   "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
+   "source": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-vs-gpt-6-luna"
+  },
+  {
    "model": "gpt-6.1-sol",
    "effort": "low",
    "score": 35,
@@ -420,60 +480,6 @@
    "ttft_s": 191,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-vs-gpt-6-astra"
-  },
-  {
-   "model": "gpt-6-luna",
-   "effort": "low",
-   "score": 10,
-   "cost_usd": 0.01,
-   "ttft_s": 3,
-   "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
-   "source": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-vs-gpt-6-luna"
-  },
-  {
-   "model": "gpt-6-luna",
-   "effort": "medium",
-   "score": 18,
-   "cost_usd": 0.04,
-   "ttft_s": 7,
-   "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
-   "source": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-vs-gpt-6-luna"
-  },
-  {
-   "model": "gpt-6-luna",
-   "effort": "high",
-   "score": 21,
-   "cost_usd": 0.07,
-   "ttft_s": 13,
-   "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
-   "source": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-vs-gpt-6-luna"
-  },
-  {
-   "model": "gpt-6-luna",
-   "effort": "xhigh",
-   "score": 23,
-   "cost_usd": 0.1,
-   "ttft_s": 21,
-   "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
-   "source": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-vs-gpt-6-luna"
-  },
-  {
-   "model": "gpt-6-luna",
-   "effort": "max",
-   "score": 28,
-   "cost_usd": 0.15,
-   "ttft_s": 84,
-   "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
-   "source": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-vs-gpt-6-luna"
-  },
-  {
-   "model": "gpt-6-luna",
-   "effort": "none",
-   "score": 9,
-   "cost_usd": 0.07,
-   "ttft_s": 2,
-   "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
-   "source": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-vs-gpt-6-luna"
   },
   {
    "model": "gpt-6-astra",
