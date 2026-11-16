@@ -1,5 +1,5 @@
 {
- "as_of": "2026-11-15",
+ "as_of": "2026-11-16",
  "sources": [
   {
    "id": "AA",
@@ -218,7 +218,7 @@
    "effort": "low",
    "score": 19,
    "cost_usd": 0.04,
-   "ttft_s": 6,
+   "ttft_s": 5,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/claude-haiku-5-5-vs-gpt-6-luna"
   },
@@ -227,7 +227,7 @@
    "effort": "medium",
    "score": 25,
    "cost_usd": 0.09,
-   "ttft_s": 11,
+   "ttft_s": 10,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/claude-haiku-5-5-vs-gpt-6-luna"
   },
@@ -236,7 +236,7 @@
    "effort": "high",
    "score": 30,
    "cost_usd": 0.16,
-   "ttft_s": 22,
+   "ttft_s": 18,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/claude-haiku-5-5-vs-gpt-6-luna"
   },
@@ -245,7 +245,7 @@
    "effort": "xhigh",
    "score": 35,
    "cost_usd": 0.25,
-   "ttft_s": 58,
+   "ttft_s": 50,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/claude-haiku-5-5-vs-gpt-6-luna"
   },
@@ -254,7 +254,7 @@
    "effort": "max",
    "score": 36,
    "cost_usd": 0.41,
-   "ttft_s": 184,
+   "ttft_s": 185,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/claude-haiku-5-5-vs-gpt-6-luna"
   },
@@ -263,7 +263,7 @@
    "effort": "low",
    "score": 26,
    "cost_usd": 0.51,
-   "ttft_s": 3,
+   "ttft_s": 2,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/claude-opus-5-5-vs-claude-sonnet-5-5"
   },
@@ -290,7 +290,7 @@
    "effort": "high",
    "score": 42,
    "cost_usd": 1.64,
-   "ttft_s": 10,
+   "ttft_s": 8,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/claude-opus-5-5-vs-claude-sonnet-5-5"
   },
@@ -299,7 +299,7 @@
    "effort": "medium",
    "score": 48,
    "cost_usd": 2.45,
-   "ttft_s": 17,
+   "ttft_s": 15,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/claude-opus-5-5-vs-claude-sonnet-5-5"
   },
@@ -308,7 +308,7 @@
    "effort": "low",
    "score": 54,
    "cost_usd": 3.1,
-   "ttft_s": 9,
+   "ttft_s": 7,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/claude-fable-5-2-vs-claude-opus-5-5"
   },
@@ -317,7 +317,7 @@
    "effort": "medium",
    "score": 56,
    "cost_usd": 3.8,
-   "ttft_s": 10,
+   "ttft_s": 9,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/claude-fable-5-2-vs-claude-opus-5-5"
   },
@@ -326,7 +326,7 @@
    "effort": "xhigh",
    "score": 57,
    "cost_usd": 6.05,
-   "ttft_s": 88,
+   "ttft_s": 77,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/claude-opus-5-5-vs-claude-sonnet-5-5"
   },
@@ -335,7 +335,7 @@
    "effort": "high",
    "score": 62,
    "cost_usd": 9.08,
-   "ttft_s": 28,
+   "ttft_s": 27,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/claude-fable-5-2-vs-claude-opus-5-5"
   },
@@ -344,7 +344,7 @@
    "effort": "max",
    "score": 65,
    "cost_usd": 26.54,
-   "ttft_s": 262,
+   "ttft_s": 232,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/claude-fable-5-2-vs-claude-opus-5-5"
   }
@@ -396,7 +396,7 @@
    "effort": "medium",
    "score": 18,
    "cost_usd": 0.04,
-   "ttft_s": 7,
+   "ttft_s": 5,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-vs-gpt-6-luna"
   },
@@ -414,7 +414,7 @@
    "effort": "high",
    "score": 21,
    "cost_usd": 0.07,
-   "ttft_s": 13,
+   "ttft_s": 10,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-vs-gpt-6-luna"
   },
@@ -423,7 +423,7 @@
    "effort": "xhigh",
    "score": 23,
    "cost_usd": 0.1,
-   "ttft_s": 21,
+   "ttft_s": 17,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-vs-gpt-6-luna"
   },
@@ -432,7 +432,7 @@
    "effort": "max",
    "score": 28,
    "cost_usd": 0.15,
-   "ttft_s": 84,
+   "ttft_s": 74,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-vs-gpt-6-luna"
   },
@@ -459,7 +459,7 @@
    "effort": "high",
    "score": 50,
    "cost_usd": 0.59,
-   "ttft_s": 38,
+   "ttft_s": 33,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-vs-gpt-6-astra"
   },
@@ -468,7 +468,7 @@
    "effort": "xhigh",
    "score": 52,
    "cost_usd": 0.76,
-   "ttft_s": 81,
+   "ttft_s": 68,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-vs-gpt-6-astra"
   },
@@ -477,7 +477,7 @@
    "effort": "max",
    "score": 55,
    "cost_usd": 1.27,
-   "ttft_s": 191,
+   "ttft_s": 167,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-vs-gpt-6-astra"
   },
@@ -495,7 +495,7 @@
    "effort": "medium",
    "score": 52,
    "cost_usd": 2.73,
-   "ttft_s": 7,
+   "ttft_s": 6,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-vs-gpt-6-astra"
   },
@@ -504,7 +504,7 @@
    "effort": "high",
    "score": 55,
    "cost_usd": 3.24,
-   "ttft_s": 61,
+   "ttft_s": 49,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-vs-gpt-6-astra"
   },
@@ -513,7 +513,7 @@
    "effort": "xhigh",
    "score": 55,
    "cost_usd": 3.66,
-   "ttft_s": 101,
+   "ttft_s": 87,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-vs-gpt-6-astra"
   },
@@ -522,7 +522,7 @@
    "effort": "max",
    "score": 57,
    "cost_usd": 6.24,
-   "ttft_s": 230,
+   "ttft_s": 198,
    "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
    "source": "https://artificialanalysis.ai/models/comparisons/gpt-6-1-sol-vs-gpt-6-astra"
   }
