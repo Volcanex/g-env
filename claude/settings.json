@@ -103,5 +103,7 @@
     "commit": "",
     "pr": "",
     "sessionUrl": false
-  }
+  },
+  "autoCompactEnabled": true,
+  "idleCompaction": true
 }
